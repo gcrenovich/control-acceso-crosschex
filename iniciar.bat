@@ -4,6 +4,14 @@ echo =============================================
 echo   Iniciando Servicios de Control de Acceso
 echo =============================================
 
+echo [0/2] Verificando y liberando puertos 3005 y 5173...
+for /f "tokens=5" %%a in ('netstat -aon ^| findstr :3005 ^| findstr LISTENING 2^>nul') do (
+    taskkill /F /PID %%a >nul 2>&1
+)
+for /f "tokens=5" %%a in ('netstat -aon ^| findstr :5173 ^| findstr LISTENING 2^>nul') do (
+    taskkill /F /PID %%a >nul 2>&1
+)
+
 echo [1/2] Iniciando Backend (Node.js API)...
 start "Backend - Control Acceso" /D "%~dp0backend" cmd /k "npm.cmd run dev"
 
