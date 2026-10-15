@@ -378,6 +378,20 @@ export const runSyncScript = () => {
     if (isSyncing) return resolve({ message: 'Sincronización ya en curso' });
     isSyncing = true;
 
+    // Compatibilidad multiplataforma: En Ubuntu/Linux la extracción de Access MDB no cuenta con ACE.OLEDB de Windows.
+    if (process.platform !== 'win32') {
+      isSyncing = false;
+      console.log('ℹ️ Entorno Linux/Ubuntu detectado: la base Access MDB se sincroniza mediante ingesta de archivos. Recargando dataset en memoria...');
+      return loadData()
+        .then(() => resolve({ 
+          success: true, 
+          platform: process.platform, 
+          message: 'Datos recargados exitosamente en Ubuntu.', 
+          timestamp: lastSyncTime 
+        }))
+        .catch(reject);
+    }
+
     const scriptPath = path.join(__dirname, '../scripts/export_data.ps1');
     const cmd = `powershell -ExecutionPolicy Bypass -File "${scriptPath}"`;
 
@@ -393,6 +407,41 @@ export const runSyncScript = () => {
       resolve({ success: true, timestamp: lastSyncTime });
     });
   });
+};
+
+// Ingesta segura de archivos de datos (para transferencias desde Windows hacia servidor Ubuntu)
+export const saveIngestedData = async (fileName, content) => {
+  const allowedFiles = new Set([
+    'departments.json',
+    'users.json',
+    'timetables.json',
+    'schedules.json',
+    'sch_times.json',
+    'user_shifts.json',
+    'user_temp_shifts.csv',
+    'leave_classes.json',
+    'user_leaves.json',
+    'checkinout.csv'
+  ]);
+
+  const baseName = path.basename(fileName);
+  if (!allowedFiles.has(baseName)) {
+    throw new Error(`Archivo no permitido o inválido: ${baseName}`);
+  }
+
+  const targetPath = path.join(DATA_DIR, baseName);
+  const tmpPath = `${targetPath}.tmp`;
+
+  if (!fs.existsSync(DATA_DIR)) {
+    await fs.promises.mkdir(DATA_DIR, { recursive: true });
+  }
+
+  await fs.promises.writeFile(tmpPath, content, 'utf8');
+  if (fs.existsSync(targetPath)) {
+    await fs.promises.unlink(targetPath);
+  }
+  await fs.promises.rename(tmpPath, targetPath);
+  return { success: true, file: baseName };
 };
 
 export const getStats = () => {

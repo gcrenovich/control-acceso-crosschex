@@ -11,10 +11,27 @@ import {
   getTurnosCatalog,
   getEmpleadosTurnos,
   getExcepcionesReport,
-  getLeaveClasses
+  getLeaveClasses,
+  saveIngestedData,
+  loadData
 } from '../services/dataStore.js';
+import { validateQueryParams, syncLimiter, requireApiKey } from '../middleware/security.js';
 
 const router = express.Router();
+
+// Health check para monitoreo en producción (Docker / systemd / uptime)
+router.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+    platform: process.platform,
+    nodeVersion: process.version
+  });
+});
+
+// Aplicar sanitización y validación estricta de parámetros en todas las rutas
+router.use(validateQueryParams);
 
 // GET /api/excepciones - Reporte de Permisos y Excepciones (UserLeave & LeaveClass)
 router.get('/excepciones', (req, res) => {
@@ -186,13 +203,44 @@ router.get('/departamentos', (req, res) => {
   }
 });
 
-// POST /api/sync - Disparar sincronización manual con réplica MDB
-router.post('/sync', async (req, res) => {
+// POST /api/sync - Disparar sincronización (protegido con rate limiter y API key opcional)
+router.post('/sync', syncLimiter, requireApiKey, async (req, res) => {
   try {
     const result = await runSyncScript();
     res.json({ success: true, ...result });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST /api/sync/push - Endpoint de ingesta segura para transferir datos a Ubuntu
+router.post('/sync/push', syncLimiter, requireApiKey, async (req, res) => {
+  try {
+    const { files, fileName, content } = req.body;
+
+    if (Array.isArray(files) && files.length > 0) {
+      for (const item of files) {
+        if (!item.fileName || item.content === undefined) {
+          return res.status(400).json({ success: false, error: 'Formato inválido en array de archivos (fileName y content requeridos)' });
+        }
+        await saveIngestedData(item.fileName, item.content);
+      }
+    } else if (fileName && content !== undefined) {
+      await saveIngestedData(fileName, content);
+    } else {
+      return res.status(400).json({ success: false, error: 'Debe enviar fileName y content, o un array files' });
+    }
+
+    // Recargar datos en memoria tras la ingesta exitosa
+    await loadData();
+
+    res.json({
+      success: true,
+      message: 'Archivos ingeridos y dataset recargado en memoria exitosamente.',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
   }
 });
 

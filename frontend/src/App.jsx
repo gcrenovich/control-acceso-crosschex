@@ -32,7 +32,8 @@ import {
 } from 'lucide-react';
 
 const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
-const API_BASE = `http://${hostname}:3005/api`;
+const isDevVite = typeof window !== 'undefined' && window.location.port === '5173';
+const API_BASE = import.meta.env.VITE_API_BASE || (isDevVite ? `http://${hostname}:3005/api` : '/api');
 
 function DonutChart({ ingresaron = 0, faltan = 0, total = 0, title, subtitle, colorIngresaron = '#10b981', colorFaltan = 'rgba(244, 63, 94, 0.25)' }) {
   const calcTotal = total || (ingresaron + faltan);
