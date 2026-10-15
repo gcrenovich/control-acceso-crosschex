@@ -233,8 +233,8 @@ try {
             $conn.Close()
         }
         $conn.Dispose()
+        $conn = $null
     }
-    [System.Data.OleDb.OleDbConnection]::ClearAllPools()
     [System.GC]::Collect()
     [System.GC]::WaitForPendingFinalizers()
 
