@@ -1,0 +1,22 @@
+[Unit]
+Description=Control de Acceso CrossChex - Backend API (Node.js)
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/var/www/control-acceso-crosschex/backend
+Environment=NODE_ENV=production
+Environment=PORT=3005
+ExecStart=/usr/bin/node src/index.js
+Restart=always
+RestartSec=5
+
+# Opciones de seguridad de systemd en Ubuntu
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
