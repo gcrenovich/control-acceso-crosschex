@@ -1,9 +1,14 @@
 $replicaDir = "C:\CrossChex_Replicas"
 $replicaPath = "$replicaDir\CrossChex_Local.mdb"
 $originalPath = $env:ORIGINAL_MDB_PATH
-$tempPath = "$replicaDir\CrossChex_Exp_$([guid]::NewGuid().ToString().Substring(0,8)).mdb"
+$tempPath = "$env:TEMP\temp_crosschex_exp_$([guid]::NewGuid().ToString().Substring(0,8)).mdb"
 
 if (!(Test-Path $replicaDir)) { New-Item -ItemType Directory -Path $replicaDir -Force | Out-Null }
+
+# Limpieza preventiva de archivos temporales huérfanos
+Get-ChildItem -Path $replicaDir -Filter "CrossChex_Exp_*" -ErrorAction SilentlyContinue | ForEach-Object {
+    Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
+}
 
 function Copy-SharedFile($src, $dst) {
     try {
@@ -223,8 +228,21 @@ try {
 
     Write-Host "Exportación completada exitosamente!"
 } finally {
-    if ($conn -and $conn.State -eq [System.Data.ConnectionState]::Open) {
-        $conn.Close()
+    if ($conn) {
+        if ($conn.State -eq [System.Data.ConnectionState]::Open) {
+            $conn.Close()
+        }
+        $conn.Dispose()
     }
-    Remove-Item $tempPath -Force -ErrorAction SilentlyContinue
+    [System.Data.OleDb.OleDbConnection]::ClearAllPools()
+    [System.GC]::Collect()
+    [System.GC]::WaitForPendingFinalizers()
+
+    if (Test-Path $tempPath) {
+        Remove-Item $tempPath -Force -ErrorAction SilentlyContinue
+    }
+    $ldbPath = [System.IO.Path]::ChangeExtension($tempPath, ".ldb")
+    if (Test-Path $ldbPath) {
+        Remove-Item $ldbPath -Force -ErrorAction SilentlyContinue
+    }
 }
