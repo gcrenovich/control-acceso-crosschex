@@ -150,6 +150,47 @@ try {
     if (Test-Path "$outputDir\user_temp_shifts.csv") { Remove-Item "$outputDir\user_temp_shifts.csv" -Force }
     Move-Item $utsTmpPath "$outputDir\user_temp_shifts.csv" -Force
 
+    Write-Host "Exportando Clases de Excepción (LeaveClass)..."
+    $cmdLC = $conn.CreateCommand()
+    $cmdLC.CommandText = "SELECT Classid, Classname, ViewColor, Showas, Units, MinUnit, SRControl, IsAddup, IsTimes, IsLeave FROM LeaveClass"
+    $adapterLC = New-Object System.Data.OleDb.OleDbDataAdapter($cmdLC)
+    $dtLC = New-Object System.Data.DataTable
+    $adapterLC.Fill($dtLC) | Out-Null
+    $lcList = @()
+    foreach ($row in $dtLC.Rows) {
+        $obj = [ordered]@{}
+        foreach ($col in $dtLC.Columns) {
+            $obj[$col.ColumnName] = $row[$col.ColumnName]
+        }
+        $lcList += $obj
+    }
+    $lcJson = $lcList | ConvertTo-Json -Depth 2
+    [System.IO.File]::WriteAllText("$outputDir\leave_classes.json.tmp", $lcJson, [System.Text.Encoding]::UTF8)
+    if (Test-Path "$outputDir\leave_classes.json") { Remove-Item "$outputDir\leave_classes.json" -Force }
+    Move-Item "$outputDir\leave_classes.json.tmp" "$outputDir\leave_classes.json" -Force
+
+    Write-Host "Exportando Permisos y Excepciones (UserLeave)..."
+    $cmdUL = $conn.CreateCommand()
+    $cmdUL.CommandText = "SELECT Lsh, userid, LeaveClassid, BeginTime, EndTime, Whys FROM UserLeave ORDER BY BeginTime DESC"
+    $adapterUL = New-Object System.Data.OleDb.OleDbDataAdapter($cmdUL)
+    $dtUL = New-Object System.Data.DataTable
+    $adapterUL.Fill($dtUL) | Out-Null
+    $ulList = @()
+    foreach ($row in $dtUL.Rows) {
+        $obj = [ordered]@{}
+        $obj["Lsh"] = $row["Lsh"]
+        $obj["userid"] = $row["userid"]
+        $obj["LeaveClassid"] = $row["LeaveClassid"]
+        $obj["BeginTime"] = if ($row["BeginTime"] -is [DateTime]) { $row["BeginTime"].ToString("yyyy-MM-dd HH:mm:ss") } else { [string]$row["BeginTime"] }
+        $obj["EndTime"] = if ($row["EndTime"] -is [DateTime]) { $row["EndTime"].ToString("yyyy-MM-dd HH:mm:ss") } else { [string]$row["EndTime"] }
+        $obj["Whys"] = if ($row["Whys"] -ne [DBNull]::Value) { [string]$row["Whys"] } else { "" }
+        $ulList += $obj
+    }
+    $ulJson = $ulList | ConvertTo-Json -Depth 2
+    [System.IO.File]::WriteAllText("$outputDir\user_leaves.json.tmp", $ulJson, [System.Text.Encoding]::UTF8)
+    if (Test-Path "$outputDir\user_leaves.json") { Remove-Item "$outputDir\user_leaves.json" -Force }
+    Move-Item "$outputDir\user_leaves.json.tmp" "$outputDir\user_leaves.json" -Force
+
     Write-Host "Exportando Marcaciones..."
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $cmdCheck = $conn.CreateCommand()

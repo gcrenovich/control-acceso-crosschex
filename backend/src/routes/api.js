@@ -1,7 +1,51 @@
 import express from 'express';
-import { getFichadas, getStats, getEmpleados, getDepartamentos, getAsistenciaReport, runSyncScript, getCensoAsistencia, getEstadisticasReport } from '../services/dataStore.js';
+import { 
+  getFichadas, 
+  getStats, 
+  getEmpleados, 
+  getDepartamentos, 
+  getAsistenciaReport, 
+  runSyncScript, 
+  getCensoAsistencia, 
+  getEstadisticasReport,
+  getTurnosCatalog,
+  getEmpleadosTurnos,
+  getExcepcionesReport,
+  getLeaveClasses
+} from '../services/dataStore.js';
 
 const router = express.Router();
+
+// GET /api/excepciones - Reporte de Permisos y Excepciones (UserLeave & LeaveClass)
+router.get('/excepciones', (req, res) => {
+  try {
+    const { legajo, empleado, deptId, fechaDesde, fechaHasta, classId, page, limit, exportAll } = req.query;
+    const result = getExcepcionesReport({
+      legajo,
+      empleado,
+      deptId,
+      fechaDesde,
+      fechaHasta,
+      classId,
+      page,
+      limit,
+      exportAll: exportAll === 'true'
+    });
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET /api/excepciones/classes - Catálogo de tipos de licencias/excepciones
+router.get('/excepciones/classes', (req, res) => {
+  try {
+    const classes = getLeaveClasses();
+    res.json({ success: true, count: classes.length, data: classes });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 // GET /api/stats - Métricas generales
 router.get('/stats', (req, res) => {
@@ -48,6 +92,35 @@ router.get('/estadisticas', (req, res) => {
   }
 });
 
+// GET /api/turnos/catalog - Catálogo de horarios/turnos y rotaciones configuradas
+router.get('/turnos/catalog', (req, res) => {
+  try {
+    const result = getTurnosCatalog();
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET /api/turnos/empleados - Asignación y verificación de turnos por empleado
+router.get('/turnos/empleados', (req, res) => {
+  try {
+    const { fecha, legajo, empleado, deptId, tipoHorario, page, limit } = req.query;
+    const result = getEmpleadosTurnos({
+      fecha,
+      legajo,
+      empleado,
+      deptId,
+      tipoHorario,
+      page,
+      limit
+    });
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // GET /api/fichadas - Consulta paginada y filtrada de marcaciones
 router.get('/fichadas', (req, res) => {
   try {
@@ -71,7 +144,7 @@ router.get('/fichadas', (req, res) => {
 // GET /api/asistencia - Reporte de Asistencia y Tardanzas
 router.get('/asistencia', (req, res) => {
   try {
-    const { legajo, empleado, deptId, fechaDesde, fechaHasta, estado, tipoHorario, horarioEntrada, horarioSalida, toleranciaMin, page, limit } = req.query;
+    const { legajo, empleado, deptId, fechaDesde, fechaHasta, estado, tipoHorario, horarioEntrada, horarioSalida, toleranciaMin, ordenFecha, page, limit } = req.query;
     const result = getAsistenciaReport({
       legajo,
       empleado,
@@ -83,6 +156,7 @@ router.get('/asistencia', (req, res) => {
       horarioEntrada,
       horarioSalida,
       toleranciaMin,
+      ordenFecha,
       page,
       limit
     });

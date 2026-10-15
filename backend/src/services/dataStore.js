@@ -17,6 +17,12 @@ let userShiftMap = new Map();      // userid -> Array of { Schid, BeginDate, End
 let schedulesMap = new Map();      // Schid -> schedule Object
 let schTimeMap = new Map();        // `${Schid}_${BeginDay}` -> Timeid
 
+let checkinsByDate = new Map();    // 'YYYY-MM-DD' -> Array of checkin objects
+let checkinsByUser = new Map();    // userid -> Array of checkin objects
+let leaveClassesMap = new Map();   // Classid -> leaveClass Object
+let userLeavesList = [];           // Array of user leave objects
+let userLeavesByUser = new Map();  // userid -> Array of leave objects
+
 let lastSyncTime = null;
 let isSyncing = false;
 let isLoaded = false;
@@ -217,8 +223,85 @@ export const loadData = async () => {
     } catch (err) {}
   }
 
-  // Stream CSV Checkins
+  // Load Leave Classes (LeaveClass)
+  leaveClassesMap.clear();
+  const leaveClassPath = path.join(DATA_DIR, 'leave_classes.json');
+  if (fs.existsSync(leaveClassPath)) {
+    try {
+      const raw = fs.readFileSync(leaveClassPath, 'utf8').replace(/^\uFEFF/, '').trim();
+      if (raw) {
+        const list = JSON.parse(raw);
+        if (Array.isArray(list)) {
+          list.forEach(lc => {
+            const classId = Number(lc.Classid);
+            leaveClassesMap.set(classId, {
+              classId,
+              className: String(lc.Classname || `Clase #${classId}`).trim(),
+              viewColor: Number(lc.ViewColor || 0),
+              showAs: String(lc.Showas || '').trim(),
+              units: Number(lc.Units || 0),
+              isLeave: Boolean(lc.IsLeave)
+            });
+          });
+        }
+      }
+    } catch (err) {
+      console.error('⚠️ Error al parsear leave_classes.json:', err.message);
+    }
+  }
+
+  // Load User Leaves (Exceptions & Permissions)
+  userLeavesList = [];
+  userLeavesByUser.clear();
+  const userLeavesPath = path.join(DATA_DIR, 'user_leaves.json');
+  if (fs.existsSync(userLeavesPath)) {
+    try {
+      const raw = fs.readFileSync(userLeavesPath, 'utf8').replace(/^\uFEFF/, '').trim();
+      if (raw) {
+        const list = JSON.parse(raw);
+        if (Array.isArray(list)) {
+          list.forEach(l => {
+            const uid = Number(l.userid);
+            const classId = Number(l.LeaveClassid);
+            const uObj = usersMap.get(uid) || { legajo: String(uid), nombre: `Usuario #${uid}`, deptId: 0, departamento: 'Sin Depto' };
+            const lcObj = leaveClassesMap.get(classId) || { className: `Clase #${classId}`, showAs: 'E', viewColor: 255 };
+
+            const leaveObj = {
+              lsh: Number(l.Lsh),
+              userid: uid,
+              legajo: uObj.legajo,
+              empleado: uObj.nombre,
+              deptId: uObj.deptId,
+              departamento: uObj.departamento,
+              classId,
+              className: lcObj.className,
+              showAs: lcObj.showAs,
+              beginTime: String(l.BeginTime || '').substring(0, 19),
+              endTime: String(l.EndTime || '').substring(0, 19),
+              beginDate: String(l.BeginTime || '').substring(0, 10),
+              endDate: String(l.EndTime || '').substring(0, 10),
+              whys: String(l.Whys || '').trim()
+            };
+
+            userLeavesList.push(leaveObj);
+
+            if (!userLeavesByUser.has(uid)) {
+              userLeavesByUser.set(uid, []);
+            }
+            userLeavesByUser.get(uid).push(leaveObj);
+          });
+        }
+      }
+    } catch (err) {
+      console.error('⚠️ Error al parsear user_leaves.json:', err.message);
+    }
+  }
+
+  // Stream CSV Checkins & Build High-Performance Indices
   checkinList = [];
+  checkinsByDate.clear();
+  checkinsByUser.clear();
+
   if (fs.existsSync(checkinPath)) {
     const fileStream = fs.createReadStream(checkinPath);
     const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
@@ -249,7 +332,7 @@ export const loadData = async () => {
           deptId: 0
         };
 
-        checkinList.push({
+        const checkinItem = {
           logid,
           userid,
           legajo: user.legajo,
@@ -261,7 +344,25 @@ export const loadData = async () => {
           hora: checkTime.substring(11, 19),
           molineteId: sensorid,
           temperatura: temp
-        });
+        };
+
+        checkinList.push(checkinItem);
+
+        // Date index
+        let dateArr = checkinsByDate.get(checkinItem.fecha);
+        if (!dateArr) {
+          dateArr = [];
+          checkinsByDate.set(checkinItem.fecha, dateArr);
+        }
+        dateArr.push(checkinItem);
+
+        // User index
+        let userArr = checkinsByUser.get(userid);
+        if (!userArr) {
+          userArr = [];
+          checkinsByUser.set(userid, userArr);
+        }
+        userArr.push(checkinItem);
       }
     }
   }
@@ -269,7 +370,7 @@ export const loadData = async () => {
   lastSyncTime = new Date().toISOString();
   isLoaded = true;
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
-  console.log(`✅ Carga finalizada: ${checkinList.length.toLocaleString()} fichadas, ${usersMap.size} empleados y ${timetablesMap.size} horarios cargados en ${elapsed}s.`);
+  console.log(`✅ Carga finalizada: ${checkinList.length.toLocaleString()} fichadas, ${usersMap.size} empleados, ${timetablesMap.size} horarios y ${userLeavesList.length} excepciones cargadas en ${elapsed}s.`);
 };
 
 export const runSyncScript = () => {
@@ -296,15 +397,13 @@ export const runSyncScript = () => {
 
 export const getStats = () => {
   const todayStr = new Date().toISOString().substring(0, 10);
-  let todayCount = 0;
+  const todayArr = checkinsByDate.get(todayStr) || [];
+  const todayCount = todayArr.length;
   const molineteCounts = {};
   const deptoCounts = {};
 
   for (let i = 0; i < checkinList.length; i++) {
     const item = checkinList[i];
-    if (item.fecha === todayStr) {
-      todayCount++;
-    }
     molineteCounts[item.molineteId] = (molineteCounts[item.molineteId] || 0) + 1;
     deptoCounts[item.departamento] = (deptoCounts[item.departamento] || 0) + 1;
   }
@@ -314,12 +413,49 @@ export const getStats = () => {
     todayCheckins: todayCount,
     totalUsers: usersMap.size,
     totalDepts: deptMap.size,
+    totalExcepciones: userLeavesList.length,
+    totalLeaveClasses: leaveClassesMap.size,
     lastSyncTime,
     isSyncing,
     isLoaded,
     molineteCounts,
     deptoCounts
   };
+};
+
+const getCheckinsForFilter = ({ fechaDesde, fechaHasta, userid }) => {
+  if (userid && checkinsByUser.has(userid)) {
+    let arr = checkinsByUser.get(userid) || [];
+    if (fechaDesde) arr = arr.filter(c => c.fecha >= fechaDesde);
+    if (fechaHasta) arr = arr.filter(c => c.fecha <= fechaHasta);
+    return arr;
+  }
+
+  if (fechaDesde && fechaHasta) {
+    const d1 = new Date(fechaDesde);
+    const d2 = new Date(fechaHasta);
+    const diffDays = Math.round((d2.getTime() - d1.getTime()) / (1000 * 3600 * 24));
+    if (diffDays >= 0 && diffDays <= 120) {
+      const result = [];
+      const curr = new Date(d1);
+      while (curr <= d2) {
+        const dStr = curr.toISOString().substring(0, 10);
+        const dayArr = checkinsByDate.get(dStr);
+        if (dayArr && dayArr.length > 0) {
+          result.push(...dayArr);
+        }
+        curr.setDate(curr.getDate() + 1);
+      }
+      return result;
+    }
+  }
+
+  if (fechaDesde && !fechaHasta) {
+    const today = new Date().toISOString().substring(0, 10);
+    return getCheckinsForFilter({ fechaDesde, fechaHasta: today, userid });
+  }
+
+  return checkinList;
 };
 
 export const getFichadas = ({ legajo, empleado, deptId, fechaDesde, fechaHasta, molineteId, page = 1, limit = 50 }) => {
@@ -332,16 +468,29 @@ export const getFichadas = ({ legajo, empleado, deptId, fechaDesde, fechaHasta, 
   const filterDept = deptId !== undefined && deptId !== '' ? Number(deptId) : null;
   const filterMolinete = molineteId !== undefined && molineteId !== '' ? Number(molineteId) : null;
 
-  let filtered = checkinList;
+  let targetUserid = null;
+  if (searchLegajo) {
+    for (const [uid, u] of usersMap.entries()) {
+      if (u.legajo.toLowerCase() === searchLegajo) {
+        targetUserid = uid;
+        break;
+      }
+    }
+  }
 
-  if (searchLegajo || searchEmpleado || filterDept !== null || filterMolinete !== null || fechaDesde || fechaHasta) {
-    filtered = checkinList.filter(item => {
+  const baseCheckins = getCheckinsForFilter({ fechaDesde, fechaHasta, userid: targetUserid });
+  let filtered = baseCheckins;
+
+  if (searchLegajo || searchEmpleado || filterDept !== null || filterMolinete !== null || (baseCheckins === checkinList && (fechaDesde || fechaHasta))) {
+    filtered = baseCheckins.filter(item => {
       if (searchLegajo && !item.legajo.toLowerCase().includes(searchLegajo)) return false;
       if (searchEmpleado && !item.empleado.toLowerCase().includes(searchEmpleado)) return false;
       if (filterDept !== null && item.deptId !== filterDept) return false;
       if (filterMolinete !== null && item.molineteId !== filterMolinete) return false;
-      if (fechaDesde && item.fecha < fechaDesde) return false;
-      if (fechaHasta && item.fecha > fechaHasta) return false;
+      if (baseCheckins === checkinList) {
+        if (fechaDesde && item.fecha < fechaDesde) return false;
+        if (fechaHasta && item.fecha > fechaHasta) return false;
+      }
       return true;
     });
   }
@@ -382,6 +531,25 @@ const getAssignedTimetables = (userid, dateStr) => {
   if (timeids && timeids.length > 0) {
     return timeids.map(id => timetablesMap.get(id)).filter(Boolean);
   }
+
+  // Fallback to general user shift assignment if defined
+  const userShifts = userShiftMap.get(userid);
+  if (userShifts && userShifts.length > 0) {
+    for (const us of userShifts) {
+      if (us.beginDate && us.endDate) {
+        if (dateStr >= us.beginDate && dateStr <= us.endDate) {
+          const dateObj = new Date(dateStr + 'T00:00:00');
+          const dayOfWeek = dateObj.getDay();
+          const schTimeKey = `${us.schid}_${dayOfWeek}`;
+          const tid = schTimeMap.get(schTimeKey);
+          if (tid && timetablesMap.has(tid)) {
+            return [timetablesMap.get(tid)];
+          }
+        }
+      }
+    }
+  }
+
   return [];
 };
 
@@ -397,6 +565,7 @@ export const getAsistenciaReport = ({
   horarioEntrada = '08:00',
   horarioSalida = '17:00',
   toleranciaMin = 15,
+  ordenFecha = 'ASC',
   page = 1,
   limit = 50
 }) => {
@@ -409,13 +578,28 @@ export const getAsistenciaReport = ({
   const filterDept = deptId !== undefined && deptId !== '' ? Number(deptId) : null;
   const defaultTolerance = parseInt(toleranciaMin, 10) || 15;
 
-  // Filter checkins
-  let filteredCheckins = checkinList;
-  if (searchLegajo || searchEmpleado || filterDept !== null) {
-    filteredCheckins = checkinList.filter(item => {
+  // Fast filter checkins using date/user indices
+  let targetUserid = null;
+  if (searchLegajo) {
+    for (const [uid, u] of usersMap.entries()) {
+      if (u.legajo.toLowerCase() === searchLegajo) {
+        targetUserid = uid;
+        break;
+      }
+    }
+  }
+
+  const baseCheckins = getCheckinsForFilter({ fechaDesde, fechaHasta, userid: targetUserid });
+  let filteredCheckins = baseCheckins;
+  if (searchLegajo || searchEmpleado || filterDept !== null || (baseCheckins === checkinList && (fechaDesde || fechaHasta))) {
+    filteredCheckins = baseCheckins.filter(item => {
       if (searchLegajo && !item.legajo.toLowerCase().includes(searchLegajo)) return false;
       if (searchEmpleado && !item.empleado.toLowerCase().includes(searchEmpleado)) return false;
       if (filterDept !== null && item.deptId !== filterDept) return false;
+      if (baseCheckins === checkinList) {
+        if (fechaDesde && item.fecha < fechaDesde) return false;
+        if (fechaHasta && item.fecha > fechaHasta) return false;
+      }
       return true;
     });
   }
@@ -580,6 +764,12 @@ export const getAsistenciaReport = ({
         totalIncompletos++;
       }
 
+      // Check if employee has a registered exception/leave on this date
+      const leave = getUserLeaveOnDate(userid, workDate);
+      if (leave && (estadoAcceso === 'INCOMPLETE' || minutosTardanza === 0)) {
+        estadoAcceso = 'EXCEPCION';
+      }
+
       // Filter by status if requested
       if (estado && estado !== '' && estadoAcceso !== estado) {
         return;
@@ -604,16 +794,26 @@ export const getAsistenciaReport = ({
         salidaReal: ultima ? ultima.hora : '--:--:--',
         totalFichadas: dayCheckins.length,
         minutosTardanza,
-        duracionHoras: duracionHoras ? `${duracionHoras} hs` : 'Sin Salida',
+        duracionHoras: duracionHoras ? `${duracionHoras} hs` : (leave ? `Excepción (${leave.className})` : 'Sin Salida'),
         estado: estadoAcceso,
+        excepcion: leave ? {
+          classId: leave.classId,
+          className: leave.className,
+          showAs: leave.showAs,
+          whys: leave.whys
+        } : null,
         molineteEntrada: primera ? primera.molineteId : null,
         molineteSalida: ultima ? ultima.molineteId : null
       });
     });
   });
 
-  // Sort by fecha desc, legajo asc
-  summary.sort((a, b) => b.fecha.localeCompare(a.fecha) || a.legajo.localeCompare(b.legajo));
+  // Sort by fecha according to ordenFecha ('ASC' default or 'DESC')
+  if (ordenFecha && ordenFecha.toUpperCase() === 'DESC') {
+    summary.sort((a, b) => b.fecha.localeCompare(a.fecha) || a.legajo.localeCompare(b.legajo));
+  } else {
+    summary.sort((a, b) => a.fecha.localeCompare(b.fecha) || a.legajo.localeCompare(b.legajo));
+  }
 
   const total = summary.length;
   const totalPages = Math.ceil(total / pageSize);
@@ -652,7 +852,7 @@ export const classifyDepartment = (name, supDeptId = 0) => {
 export const getCensoAsistencia = ({ fecha }) => {
   const targetDate = fecha || new Date().toISOString().substring(0, 10);
   
-  const dayCheckins = checkinList.filter(item => item.fecha === targetDate);
+  const dayCheckins = checkinsByDate.get(targetDate) || [];
   const presentUserIds = new Set(dayCheckins.map(item => item.userid));
 
   const resumen = {
@@ -825,6 +1025,37 @@ export const getEstadisticasReport = ({
     const trabajadosDias = uStat.trabajadosDias;
     const ausenteDias = Math.max(0, laboralesDias - trabajadosDias);
 
+    const userLeaves = userLeavesByUser.get(u.userid) || [];
+    let licenciasDias = 0;
+    const licenciasSet = new Set();
+    const classCounts = {
+      1: 0, // Enfermedad
+      2: 0, // Accidente
+      3: 0, // Con Aviso
+      4: 0, // ERROR DE TARJETA
+      5: 0, // cambio de turno
+      6: 0, // Horas a Devolver
+      7: 0, // Suspendido
+      8: 0, // Sin Aviso
+      9: 0, // Mision Gremial
+      10: 0 // Horas compensadas
+    };
+
+    userLeaves.forEach(l => {
+      if (l.endDate >= startStr && l.beginDate <= endStr) {
+        licenciasSet.add(l.className);
+        const b = l.beginDate < startStr ? startStr : l.beginDate;
+        const e = l.endDate > endStr ? endStr : l.endDate;
+        const days = Math.max(1, Math.round((new Date(e) - new Date(b)) / (1000 * 3600 * 24)) + 1);
+        licenciasDias += days;
+        if (classCounts[l.classId] !== undefined) {
+          classCounts[l.classId] += days;
+        }
+      }
+    });
+    licenciasDias = Math.min(diffDays, licenciasDias);
+    const ausenteInjustificadoDias = Math.max(0, ausenteDias - licenciasDias);
+
     const tipos = Array.from(uStat.tiposHorarioSet);
     const tipoHabitual = tipos.length > 0 ? tipos.join(', ') : 'CORRIDO';
 
@@ -843,6 +1074,9 @@ export const getEstadisticasReport = ({
       llegadasTardeMin: uStat.llegadasTardeMin,
       salidasTempranoMin: uStat.salidasTempranoMin,
       ausenteDias,
+      licenciasDias,
+      ausenteInjustificadoDias,
+      licenciasDetalle: Array.from(licenciasSet).join(', '),
       tiempoExtraMin: 0,
       overtime1Min: 0,
       overtime2Min: 0,
@@ -852,7 +1086,17 @@ export const getEstadisticasReport = ({
       sinSalidaVeces: uStat.sinSalidaVeces,
       tiempoTrabajadoHs: Number(uStat.totalTrabajadoHs.toFixed(2)),
       tiempoCumplidoHs: Number(uStat.totalTrabajadoHs.toFixed(2)),
-      presentismoPct
+      presentismoPct,
+      enfermedad: classCounts[1] || 0,
+      accidente: classCounts[2] || 0,
+      conAviso: classCounts[3] || 0,
+      errorTarjeta: classCounts[4] || 0,
+      cambioTurno: classCounts[5] || 0,
+      horasADevolver: classCounts[6] || 0,
+      suspendido: classCounts[7] || 0,
+      sinAviso: classCounts[8] || 0,
+      misionGremial: classCounts[9] || 0,
+      horasCompensadas: classCounts[10] || 0
     });
   });
 
@@ -898,3 +1142,348 @@ export const getEstadisticasReport = ({
     allData: statsList
   };
 };
+
+export const getTurnosCatalog = () => {
+  const timetables = Array.from(timetablesMap.values()).map(t => {
+    let tipo = 'CORRIDO';
+    if (t.isNightShift) {
+      tipo = 'NOCTURNO';
+    }
+    const durationHs = t.longtime ? (t.longtime / 60).toFixed(1) : '8.0';
+
+    return {
+      timeid: t.timeid,
+      name: t.name,
+      intime: t.intime,
+      outtime: t.outtime,
+      bIntime: t.bIntime,
+      eIntime: t.eIntime,
+      bOuttime: t.bOuttime,
+      eOuttime: t.eOuttime,
+      latetime: t.latetime,
+      leavetime: t.leavetime,
+      longtime: t.longtime,
+      durationHs,
+      isNightShift: t.isNightShift,
+      tipo
+    };
+  });
+
+  const schedules = Array.from(schedulesMap.values()).map(s => ({
+    schid: Number(s.Schid || s.schid || 0),
+    schname: String(s.Schname || s.schname || 'Sin Nombre').trim(),
+    cycles: Number(s.Cycles || s.cycles || 1),
+    units: Number(s.Units || s.units || 1),
+    isDefault: Boolean(s.IsDefault || s.isDefault)
+  }));
+
+  let corridoCount = 0;
+  let nocturnoCount = 0;
+  timetables.forEach(t => {
+    if (t.tipo === 'NOCTURNO') nocturnoCount++;
+    else corridoCount++;
+  });
+
+  return {
+    success: true,
+    totalTimetables: timetables.length,
+    totalSchedules: schedules.length,
+    stats: {
+      corridoCount,
+      nocturnoCount
+    },
+    timetables,
+    schedules
+  };
+};
+
+export const getEmpleadosTurnos = ({
+  fecha,
+  legajo,
+  empleado,
+  deptId,
+  tipoHorario = 'TODOS',
+  page = 1,
+  limit = 50
+}) => {
+  const startTime = Date.now();
+  const pageNum = Math.max(1, parseInt(page, 10));
+  const pageSize = Math.min(200, Math.max(1, parseInt(limit, 10)));
+  const targetDate = fecha || new Date().toISOString().substring(0, 10);
+
+  const searchLegajo = legajo ? legajo.toString().toLowerCase().trim() : null;
+  const searchEmpleado = empleado ? empleado.toString().toLowerCase().trim() : null;
+  const filterDept = deptId !== undefined && deptId !== '' ? Number(deptId) : null;
+
+  const nextDateObj = new Date(targetDate);
+  nextDateObj.setDate(nextDateObj.getDate() + 1);
+  const nextDateStr = nextDateObj.toISOString().substring(0, 10);
+
+  const targetCheckinsList = checkinsByDate.get(targetDate) || [];
+  const nextCheckinsList = checkinsByDate.get(nextDateStr) || [];
+
+  const checkinsTargetMap = new Map();
+  const checkinsNextMap = new Map();
+
+  for (let i = 0; i < targetCheckinsList.length; i++) {
+    const c = targetCheckinsList[i];
+    if (!checkinsTargetMap.has(c.userid)) checkinsTargetMap.set(c.userid, []);
+    checkinsTargetMap.get(c.userid).push(c);
+  }
+
+  for (let i = 0; i < nextCheckinsList.length; i++) {
+    const c = nextCheckinsList[i];
+    if (!checkinsNextMap.has(c.userid)) checkinsNextMap.set(c.userid, []);
+    checkinsNextMap.get(c.userid).push(c);
+  }
+
+  const resultList = [];
+  let countCorrido = 0;
+  let countCortado = 0;
+  let countNocturno = 0;
+  let countAusentes = 0;
+  let countExcepciones = 0;
+
+  usersMap.forEach(u => {
+    if (searchLegajo && !u.legajo.toLowerCase().includes(searchLegajo)) return;
+    if (searchEmpleado && !u.nombre.toLowerCase().includes(searchEmpleado)) return;
+    if (filterDept !== null && u.deptId !== filterDept) return;
+
+    const assignedTTs = getAssignedTimetables(u.userid, targetDate);
+    const dayCheckins = (checkinsTargetMap.get(u.userid) || []).sort((a, b) => a.fechaHora.localeCompare(b.fechaHora));
+    const nextCheckins = (checkinsNextMap.get(u.userid) || []).sort((a, b) => a.fechaHora.localeCompare(b.fechaHora));
+
+    let tipo = 'CORRIDO';
+    let horarioTeoricoStr = '08:00 - 17:00';
+    let horasTeoricas = 9.0;
+    let primera = dayCheckins[0] || null;
+    let ultima = dayCheckins.length > 1 ? dayCheckins[dayCheckins.length - 1] : null;
+    let tramos = [];
+    let duracionRealHs = null;
+    let estado = 'PUNCTUAL';
+
+    const nightTT = assignedTTs.find(t => t.isNightShift);
+    const isDynamicNight = !assignedTTs.length && primera && parseTimeToMinutes(primera.hora) >= 19 * 60;
+
+    if (nightTT || isDynamicNight) {
+      tipo = 'NOCTURNO';
+      const tt = nightTT || { name: 'Noche', intime: '21:00', outtime: '05:00', longtime: 480 };
+      horarioTeoricoStr = `${tt.intime} - ${tt.outtime} (+1d)`;
+      horasTeoricas = tt.longtime ? Number((tt.longtime / 60).toFixed(1)) : 8.0;
+
+      const exitCheckin = nextCheckins.find(c => parseTimeToMinutes(c.hora) <= 11 * 60);
+      if (exitCheckin) {
+        ultima = exitCheckin;
+      }
+      if (primera && ultima) {
+        const diffMs = new Date(ultima.fechaHora).getTime() - new Date(primera.fechaHora).getTime();
+        duracionRealHs = (diffMs / (1000 * 3600)).toFixed(2);
+        tramos.push({
+          tramo: 'Turno Noche',
+          entrada: primera.hora,
+          salida: `${ultima.hora} (+1d)`,
+          duracion: `${duracionRealHs} hs`
+        });
+      }
+      countNocturno++;
+    } else if (assignedTTs.length >= 2 || (assignedTTs.length === 0 && dayCheckins.length >= 4)) {
+      tipo = 'CORTADO';
+      if (assignedTTs.length >= 2) {
+        const t1 = assignedTTs[0];
+        const t2 = assignedTTs[1];
+        horarioTeoricoStr = `${t1.intime}-${t1.outtime} / ${t2.intime}-${t2.outtime}`;
+        horasTeoricas = Number(((t1.longtime + t2.longtime) / 60).toFixed(1));
+      } else {
+        horarioTeoricoStr = '07:00-12:00 / 14:00-18:00';
+        horasTeoricas = 9.0;
+      }
+
+      if (dayCheckins.length >= 4) {
+        const c1 = dayCheckins[0];
+        const c2 = dayCheckins[1];
+        const c3 = dayCheckins[2];
+        const c4 = dayCheckins[dayCheckins.length - 1];
+
+        const diff1Ms = new Date(c2.fechaHora).getTime() - new Date(c1.fechaHora).getTime();
+        const diff2Ms = new Date(c4.fechaHora).getTime() - new Date(c3.fechaHora).getTime();
+        const dur1 = (diff1Ms / (1000 * 3600)).toFixed(2);
+        const dur2 = (diff2Ms / (1000 * 3600)).toFixed(2);
+        duracionRealHs = (parseFloat(dur1) + parseFloat(dur2)).toFixed(2);
+        primera = c1;
+        ultima = c4;
+
+        tramos.push(
+          { tramo: 'Mañana (Tramo 1)', entrada: c1.hora, salida: c2.hora, duracion: `${dur1} hs` },
+          { tramo: 'Tarde (Tramo 2)', entrada: c3.hora, salida: c4.hora, duracion: `${dur2} hs` }
+        );
+      } else if (dayCheckins.length >= 2) {
+        primera = dayCheckins[0];
+        ultima = dayCheckins[dayCheckins.length - 1];
+        const diffMs = new Date(ultima.fechaHora).getTime() - new Date(primera.fechaHora).getTime();
+        duracionRealHs = (diffMs / (1000 * 3600)).toFixed(2);
+        tramos.push({
+          tramo: 'Registro Parcial Cortado',
+          entrada: primera.hora,
+          salida: ultima.hora,
+          duracion: `${duracionRealHs} hs`
+        });
+      }
+      countCortado++;
+    } else {
+      tipo = 'CORRIDO';
+      if (assignedTTs.length === 1) {
+        const tt = assignedTTs[0];
+        horarioTeoricoStr = `${tt.intime} - ${tt.outtime}`;
+        horasTeoricas = tt.longtime ? Number((tt.longtime / 60).toFixed(1)) : 8.0;
+      } else {
+        horarioTeoricoStr = '08:00 - 17:00';
+        horasTeoricas = 9.0;
+      }
+
+      if (primera && ultima && primera.fechaHora !== ultima.fechaHora) {
+        const diffMs = new Date(ultima.fechaHora).getTime() - new Date(primera.fechaHora).getTime();
+        duracionRealHs = (diffMs / (1000 * 3600)).toFixed(2);
+        tramos.push({
+          tramo: 'Jornada Corrida',
+          entrada: primera.hora,
+          salida: ultima.hora,
+          duracion: `${duracionRealHs} hs`
+        });
+      }
+      countCorrido++;
+    }
+
+    if (tipoHorario !== 'TODOS' && tipo !== tipoHorario) {
+      return;
+    }
+
+    const leave = getUserLeaveOnDate(u.userid, targetDate);
+    if (leave) {
+      estado = 'EXCEPCION';
+      countExcepciones++;
+    } else if (dayCheckins.length === 0) {
+      estado = 'ABSENT';
+      countAusentes++;
+    } else if (!ultima || (primera && ultima && primera.fechaHora === ultima.fechaHora)) {
+      estado = 'INCOMPLETE';
+    } else {
+      estado = 'PUNCTUAL';
+    }
+
+    resultList.push({
+      userid: u.userid,
+      legajo: u.legajo,
+      empleado: u.nombre,
+      deptId: u.deptId,
+      departamento: u.departamento,
+      fecha: targetDate,
+      tipoHorario: tipo,
+      horarioTeorico: horarioTeoricoStr,
+      horasTeoricas,
+      fichadasCount: dayCheckins.length,
+      entradaReal: primera ? primera.hora : '--:--:--',
+      salidaReal: ultima ? ultima.hora : '--:--:--',
+      duracionRealHs: duracionRealHs ? `${duracionRealHs} hs` : (leave ? `Excepción (${leave.className})` : (estado === 'ABSENT' ? 'Sin Registro' : 'Sin Salida')),
+      estado,
+      excepcion: leave ? {
+        classId: leave.classId,
+        className: leave.className,
+        showAs: leave.showAs,
+        whys: leave.whys,
+        beginTime: leave.beginTime,
+        endTime: leave.endTime
+      } : null,
+      tramos,
+      fichadasRaw: dayCheckins.map(c => ({ hora: c.hora, molineteId: c.molineteId }))
+    });
+  });
+
+  resultList.sort((a, b) => a.departamento.localeCompare(b.departamento) || a.legajo.localeCompare(b.legajo));
+
+  const total = resultList.length;
+  const totalPages = Math.ceil(total / pageSize);
+  const offset = (pageNum - 1) * pageSize;
+  const data = resultList.slice(offset, offset + pageSize);
+  const elapsedMs = Date.now() - startTime;
+
+  return {
+    success: true,
+    fecha: targetDate,
+    total,
+    page: pageNum,
+    limit: pageSize,
+    totalPages,
+    elapsedMs,
+    summaryStats: {
+      totalEmpleados: total,
+      corridoCount: countCorrido,
+      cortadoCount: countCortado,
+      nocturnoCount: countNocturno,
+      ausentesCount: countAusentes,
+      excepcionesCount: countExcepciones
+    },
+    data
+  };
+};
+
+export const getUserLeaveOnDate = (userid, dateStr) => {
+  const leaves = userLeavesByUser.get(Number(userid));
+  if (!leaves || leaves.length === 0) return null;
+  return leaves.find(l => l.beginDate <= dateStr && l.endDate >= dateStr) || null;
+};
+
+export const getLeaveClasses = () => {
+  return Array.from(leaveClassesMap.values());
+};
+
+export const getExcepcionesReport = ({
+  legajo,
+  empleado,
+  deptId,
+  fechaDesde,
+  fechaHasta,
+  classId,
+  page = 1,
+  limit = 50,
+  exportAll = false
+}) => {
+  const startTime = Date.now();
+  const pageNum = Math.max(1, parseInt(page, 10));
+  const pageSize = Math.min(200, Math.max(1, parseInt(limit, 10)));
+
+  const searchLegajo = legajo ? legajo.toString().toLowerCase().trim() : null;
+  const searchEmpleado = empleado ? empleado.toString().toLowerCase().trim() : null;
+  const filterDept = deptId !== undefined && deptId !== '' ? Number(deptId) : null;
+  const filterClass = classId !== undefined && classId !== '' ? Number(classId) : null;
+
+  let filtered = userLeavesList;
+
+  if (searchLegajo || searchEmpleado || filterDept !== null || filterClass !== null || fechaDesde || fechaHasta) {
+    filtered = userLeavesList.filter(l => {
+      if (searchLegajo && !l.legajo.toLowerCase().includes(searchLegajo)) return false;
+      if (searchEmpleado && !l.empleado.toLowerCase().includes(searchEmpleado)) return false;
+      if (filterDept !== null && l.deptId !== filterDept) return false;
+      if (filterClass !== null && l.classId !== filterClass) return false;
+      if (fechaDesde && l.endDate < fechaDesde) return false;
+      if (fechaHasta && l.beginDate > fechaHasta) return false;
+      return true;
+    });
+  }
+
+  filtered.sort((a, b) => b.beginTime.localeCompare(a.beginTime));
+
+  const total = filtered.length;
+  const totalPages = Math.ceil(total / pageSize);
+  const data = exportAll ? filtered : filtered.slice((pageNum - 1) * pageSize, (pageNum - 1) * pageSize + pageSize);
+  const elapsedMs = Date.now() - startTime;
+
+  return {
+    total,
+    page: pageNum,
+    limit: pageSize,
+    totalPages,
+    elapsedMs,
+    data
+  };
+};
+

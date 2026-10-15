@@ -26,7 +26,9 @@ import {
   ListFilter,
   PieChart,
   TrendingUp,
-  UserX
+  UserX,
+  FileText,
+  AlertCircle
 } from 'lucide-react';
 
 const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
@@ -117,6 +119,19 @@ export default function App() {
   // Estadísticas Acumuladas State
   const [estadisticasData, setEstadisticasData] = useState(null);
 
+  // Turnos & Horarios State
+  const [turnosCatalog, setTurnosCatalog] = useState(null);
+  const [empleadosTurnosData, setEmpleadosTurnosData] = useState(null);
+  const [subTabTurnos, setSubTabTurnos] = useState('empleados'); // 'empleados' | 'catalogo'
+
+  // Excepciones & Licencias State
+  const [excepcionesList, setExcepcionesList] = useState([]);
+  const [excepcionesTotal, setExcepcionesTotal] = useState(0);
+  const [excepcionesTotalPages, setExcepcionesTotalPages] = useState(1);
+  const [excepcionesClasses, setExcepcionesClasses] = useState([]);
+  const [selectedClassId, setSelectedClassId] = useState('');
+  const [elapsedMsExcepciones, setElapsedMsExcepciones] = useState(0);
+
   // Shared Filters
   const getTodayString = () => new Date().toISOString().substring(0, 10);
   const [legajo, setLegajo] = useState('');
@@ -134,6 +149,7 @@ export default function App() {
   const [toleranciaMin, setToleranciaMin] = useState(15);
   const [estadoFilter, setEstadoFilter] = useState('');
   const [tipoHorarioFilter, setTipoHorarioFilter] = useState('TODOS');
+  const [ordenFecha, setOrdenFecha] = useState('ASC');
 
   // UI States
   const [loading, setLoading] = useState(true);
@@ -214,6 +230,7 @@ export default function App() {
       if (horarioEntrada) queryParams.append('horarioEntrada', horarioEntrada);
       if (horarioSalida) queryParams.append('horarioSalida', horarioSalida);
       if (toleranciaMin) queryParams.append('toleranciaMin', toleranciaMin);
+      if (ordenFecha) queryParams.append('ordenFecha', ordenFecha);
       queryParams.append('page', page);
       queryParams.append('limit', limit);
 
@@ -232,7 +249,7 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [legajo, empleado, deptId, fechaDesde, fechaHasta, estadoFilter, tipoHorarioFilter, horarioEntrada, horarioSalida, toleranciaMin, page, limit]);
+  }, [legajo, empleado, deptId, fechaDesde, fechaHasta, estadoFilter, tipoHorarioFilter, horarioEntrada, horarioSalida, toleranciaMin, ordenFecha, page, limit]);
 
   // Fetch Censo & Categorias
   const fetchCenso = useCallback(async () => {
@@ -280,10 +297,140 @@ export default function App() {
     }
   }, [legajo, empleado, deptId, fechaDesde, fechaHasta, horarioEntrada, horarioSalida, toleranciaMin, page, limit]);
 
+  // Fetch Turnos Catalog
+  const fetchTurnosCatalog = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/turnos/catalog`);
+      const data = await res.json();
+      if (data.success) {
+        setTurnosCatalog(data);
+      }
+    } catch (err) {
+      console.error('Error al cargar catálogo de turnos:', err);
+    }
+  }, []);
+
+  // Fetch Empleados Turnos
+  const fetchEmpleadosTurnos = useCallback(async () => {
+    setLoading(true);
+    try {
+      const queryParams = new URLSearchParams();
+      if (fechaDesde) queryParams.append('fecha', fechaDesde);
+      if (legajo) queryParams.append('legajo', legajo);
+      if (empleado) queryParams.append('empleado', empleado);
+      if (deptId) queryParams.append('deptId', deptId);
+      if (tipoHorarioFilter && tipoHorarioFilter !== 'TODOS') queryParams.append('tipoHorario', tipoHorarioFilter);
+      queryParams.append('page', page);
+      queryParams.append('limit', limit);
+
+      const res = await fetch(`${API_BASE}/turnos/empleados?${queryParams.toString()}`);
+      const data = await res.json();
+      if (data.success) {
+        setEmpleadosTurnosData(data);
+      }
+    } catch (err) {
+      console.error('Error al cargar turnos de empleados:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [fechaDesde, legajo, empleado, deptId, tipoHorarioFilter, page, limit]);
+
+  // Fetch Excepciones Classes
+  const fetchExcepcionesClasses = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/excepciones/classes`);
+      const data = await res.json();
+      if (data.success) {
+        setExcepcionesClasses(data.data);
+      }
+    } catch (err) {
+      console.error('Error al cargar clases de excepciones:', err);
+    }
+  }, []);
+
+  // Fetch Excepciones Report
+  const fetchExcepciones = useCallback(async () => {
+    setLoading(true);
+    try {
+      const queryParams = new URLSearchParams();
+      if (legajo) queryParams.append('legajo', legajo);
+      if (empleado) queryParams.append('empleado', empleado);
+      if (deptId) queryParams.append('deptId', deptId);
+      if (fechaDesde) queryParams.append('fechaDesde', fechaDesde);
+      if (fechaHasta) queryParams.append('fechaHasta', fechaHasta);
+      if (selectedClassId) queryParams.append('classId', selectedClassId);
+      queryParams.append('page', page);
+      queryParams.append('limit', limit);
+
+      const res = await fetch(`${API_BASE}/excepciones?${queryParams.toString()}`);
+      const data = await res.json();
+
+      if (data.success) {
+        setExcepcionesList(data.data);
+        setExcepcionesTotal(data.total);
+        setExcepcionesTotalPages(data.totalPages);
+        setElapsedMsExcepciones(data.elapsedMs);
+      }
+    } catch (err) {
+      console.error('Error al cargar excepciones:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [legajo, empleado, deptId, fechaDesde, fechaHasta, selectedClassId, page, limit]);
+
+  // Export Excepciones to Excel
+  const handleExportExcepcionesExcel = async () => {
+    try {
+      const queryParams = new URLSearchParams();
+      if (legajo) queryParams.append('legajo', legajo);
+      if (empleado) queryParams.append('empleado', empleado);
+      if (deptId) queryParams.append('deptId', deptId);
+      if (fechaDesde) queryParams.append('fechaDesde', fechaDesde);
+      if (fechaHasta) queryParams.append('fechaHasta', fechaHasta);
+      if (selectedClassId) queryParams.append('classId', selectedClassId);
+      queryParams.append('exportAll', 'true');
+
+      const res = await fetch(`${API_BASE}/excepciones?${queryParams.toString()}`);
+      const data = await res.json();
+
+      if (data.success && data.data) {
+        const rows = data.data.map(item => ({
+          'ID': item.userid,
+          'Legajo': item.legajo,
+          'Nombre': item.empleado,
+          'Departamento': item.departamento,
+          'Tipo Excepción': item.className,
+          'Fecha Inicio': item.beginTime,
+          'Fecha Fin': item.endTime,
+          'Observaciones / Razón': item.whys || 'Sin observaciones'
+        }));
+
+        const worksheet = XLSX.utils.json_to_sheet(rows);
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, 'Detalle_Excepciones');
+        XLSX.writeFile(workbook, `Detalle_Excepciones_${fechaDesde || 'Historico'}_al_${fechaHasta || 'Hoy'}.xlsx`);
+      }
+    } catch (err) {
+      console.error('Error al exportar excepciones:', err);
+    }
+  };
+
+  const getExceptionBadgeClass = (classId) => {
+    switch (Number(classId)) {
+      case 1: return 'badge-excepcion-enfermedad';
+      case 2: return 'badge-excepcion-accidente';
+      case 3: return 'badge-excepcion-aviso';
+      case 6:
+      case 10: return 'badge-excepcion-compensada';
+      default: return 'badge-excepcion-general';
+    }
+  };
+
   useEffect(() => {
     fetchStats();
     fetchDepartamentos();
-  }, []);
+    fetchExcepcionesClasses();
+  }, [fetchExcepcionesClasses]);
 
   useEffect(() => {
     if (activeTab === 'asistencia') {
@@ -294,8 +441,13 @@ export default function App() {
       fetchCenso();
     } else if (activeTab === 'estadisticas') {
       fetchEstadisticas();
+    } else if (activeTab === 'turnos') {
+      fetchEmpleadosTurnos();
+      fetchTurnosCatalog();
+    } else if (activeTab === 'excepciones') {
+      fetchExcepciones();
     }
-  }, [activeTab, fetchAsistencia, fetchFichadas, fetchCenso, fetchEstadisticas]);
+  }, [activeTab, fetchAsistencia, fetchFichadas, fetchCenso, fetchEstadisticas, fetchEmpleadosTurnos, fetchTurnosCatalog, fetchExcepciones]);
 
   // Periodic Auto-Refresh for Realtime Replica Updates
   useEffect(() => {
@@ -311,11 +463,16 @@ export default function App() {
         fetchCenso();
       } else if (activeTab === 'estadisticas') {
         fetchEstadisticas();
+      } else if (activeTab === 'turnos') {
+        fetchEmpleadosTurnos();
+        fetchTurnosCatalog();
+      } else if (activeTab === 'excepciones') {
+        fetchExcepciones();
       }
     }, autoRefreshIntervalSec * 1000);
 
     return () => clearInterval(timer);
-  }, [autoRefreshEnabled, autoRefreshIntervalSec, activeTab, fetchAsistencia, fetchFichadas, fetchCenso, fetchEstadisticas]);
+  }, [autoRefreshEnabled, autoRefreshIntervalSec, activeTab, fetchAsistencia, fetchFichadas, fetchCenso, fetchEstadisticas, fetchEmpleadosTurnos, fetchTurnosCatalog, fetchExcepciones]);
 
 
   // Sync Trigger
@@ -349,6 +506,7 @@ export default function App() {
     setHorarioEntrada('08:00');
     setHorarioSalida('17:00');
     setToleranciaMin(15);
+    setOrdenFecha('ASC');
     setPage(1);
   };
 
@@ -533,6 +691,20 @@ export default function App() {
           </button>
 
           <button 
+            className={`tab-btn ${activeTab === 'turnos' ? 'active' : ''}`}
+            onClick={() => { setActiveTab('turnos'); setPage(1); }}
+          >
+            <Clock3 size={18} /> Turnos y Horarios
+          </button>
+
+          <button 
+            className={`tab-btn ${activeTab === 'excepciones' ? 'active' : ''}`}
+            onClick={() => { setActiveTab('excepciones'); setPage(1); }}
+          >
+            <FileText size={18} /> Detalle de Excepciones
+          </button>
+
+          <button 
             className={`tab-btn ${activeTab === 'estadisticas' ? 'active' : ''}`}
             onClick={() => { setActiveTab('estadisticas'); setPage(1); }}
           >
@@ -557,11 +729,15 @@ export default function App() {
         <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
           {activeTab === 'censo' 
             ? '🍩 Gráficas por Categoría (Permanentes, Eventuales, Transitorios) y Censo por Depto.' 
-            : activeTab === 'estadisticas'
-              ? '📈 Matriz de Estadísticas Acumuladas por Empleado (Días, Tardanzas, Ausencias, Horas)'
-              : activeTab === 'asistencia' 
-                ? '📊 Agrupación diaria por Legajo' 
-                : '📋 Listado cronológico de accesos'}
+            : activeTab === 'turnos'
+              ? '⏰ Visualizador de Turnos (Cortados 7-12/14-18, Corridos, Nocturnos +1d)'
+              : activeTab === 'excepciones'
+                ? '📑 Detalle de Excepciones y Licencias de Personal (UserLeave & LeaveClass)'
+                : activeTab === 'estadisticas'
+                  ? '📈 Matriz de Estadísticas Acumuladas por Empleado (Días, Tardanzas, Ausencias, Horas)'
+                  : activeTab === 'asistencia' 
+                    ? '📊 Agrupación diaria por Legajo' 
+                    : '📋 Listado cronológico de accesos'}
         </div>
       </div>
 
@@ -1008,8 +1184,669 @@ export default function App() {
         </div>
       )}
 
-      {/* KPI METRICS GRID */}
-      {activeTab === 'asistencia' ? (
+      {/* TURNOS Y HORARIOS VIEW */}
+      {activeTab === 'turnos' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', marginTop: '1rem' }}>
+          {/* KPI METRICS BAR */}
+          {empleadosTurnosData?.summaryStats && (
+            <section className="kpi-grid">
+              <div className="glass-panel kpi-card">
+                <div className="kpi-icon" style={{ background: 'rgba(99, 102, 241, 0.15)', color: '#818cf8' }}>
+                  <Users size={22} />
+                </div>
+                <div className="kpi-content">
+                  <span className="kpi-value">{empleadosTurnosData.summaryStats.totalEmpleados || 0}</span>
+                  <span className="kpi-label">Plantilla Consultada</span>
+                </div>
+              </div>
+
+              <div className="glass-panel kpi-card">
+                <div className="kpi-icon" style={{ background: 'rgba(16, 185, 129, 0.15)', color: '#34d399' }}>
+                  <Clock3 size={22} />
+                </div>
+                <div className="kpi-content">
+                  <span className="kpi-value">{empleadosTurnosData.summaryStats.corridoCount || 0}</span>
+                  <span className="kpi-label">Turnos Corridos</span>
+                </div>
+              </div>
+
+              <div className="glass-panel kpi-card">
+                <div className="kpi-icon" style={{ background: 'rgba(6, 182, 212, 0.15)', color: '#22d3ee' }}>
+                  <Calendar size={22} />
+                </div>
+                <div className="kpi-content">
+                  <span className="kpi-value">{empleadosTurnosData.summaryStats.cortadoCount || 0}</span>
+                  <span className="kpi-label">Horarios Cortados (7-12 / 14-18)</span>
+                </div>
+              </div>
+
+              <div className="glass-panel kpi-card">
+                <div className="kpi-icon" style={{ background: 'rgba(139, 92, 246, 0.18)', color: '#a78bfa' }}>
+                  <Activity size={22} />
+                </div>
+                <div className="kpi-content">
+                  <span className="kpi-value">{empleadosTurnosData.summaryStats.nocturnoCount || 0}</span>
+                  <span className="kpi-label">Turnos Nocturnos (+1d)</span>
+                </div>
+              </div>
+
+              <div className="glass-panel kpi-card">
+                <div className="kpi-icon" style={{ background: 'rgba(244, 63, 94, 0.15)', color: '#f43f5e' }}>
+                  <UserX size={22} />
+                </div>
+                <div className="kpi-content">
+                  <span className="kpi-value">{empleadosTurnosData.summaryStats.ausentesCount || 0}</span>
+                  <span className="kpi-label">Sin Fichadas / Ausentes</span>
+                </div>
+              </div>
+
+              <div className="glass-panel kpi-card">
+                <div className="kpi-icon" style={{ background: 'rgba(245, 158, 11, 0.18)', color: '#fbbf24' }}>
+                  <FileText size={22} />
+                </div>
+                <div className="kpi-content">
+                  <span className="kpi-value">{empleadosTurnosData.summaryStats.excepcionesCount || 0}</span>
+                  <span className="kpi-label">Con Licencia / Excepción</span>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {/* SUB-TABS SELECTOR */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+            <div className="tab-group" style={{ background: 'rgba(255,255,255,0.03)' }}>
+              <button 
+                className={`tab-btn ${subTabTurnos === 'empleados' ? 'active' : ''}`}
+                onClick={() => setSubTabTurnos('empleados')}
+              >
+                <Users size={16} /> Verificación de Turnos por Empleado
+              </button>
+              <button 
+                className={`tab-btn ${subTabTurnos === 'catalogo' ? 'active' : ''}`}
+                onClick={() => setSubTabTurnos('catalogo')}
+              >
+                <Clock size={16} /> Catálogo de Horarios Configurados ({turnosCatalog?.totalTimetables || 0})
+              </button>
+            </div>
+
+            {subTabTurnos === 'empleados' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                <Calendar size={16} style={{ color: 'var(--primary)' }} />
+                <span>Fecha de Análisis: <strong>{fechaDesde}</strong></span>
+              </div>
+            )}
+          </div>
+
+          {/* SUB-TAB 1: EMPLEADOS & VERIFICACION */}
+          {subTabTurnos === 'empleados' && (
+            <>
+              {/* FILTERS PANEL */}
+              <section className="glass-panel filter-panel">
+                <div className="filter-grid">
+                  <div className="input-group">
+                    <label className="input-label">Fecha a Consultar</label>
+                    <input 
+                      type="date" 
+                      className="input-field" 
+                      value={fechaDesde} 
+                      onChange={(e) => { setFechaDesde(e.target.value); setPage(1); }} 
+                    />
+                  </div>
+
+                  <div className="input-group">
+                    <label className="input-label">Tipo de Horario</label>
+                    <select 
+                      className="input-field" 
+                      value={tipoHorarioFilter} 
+                      onChange={(e) => { setTipoHorarioFilter(e.target.value); setPage(1); }}
+                    >
+                      <option value="TODOS">Todos los Tipos de Turno</option>
+                      <option value="CORRIDO">🟢 Horario Corrido</option>
+                      <option value="CORTADO">🔵 Horario Cortado (Mañana / Tarde)</option>
+                      <option value="NOCTURNO">🌙 Turno Nocturno (+1 Día)</option>
+                    </select>
+                  </div>
+
+                  <div className="input-group">
+                    <label className="input-label">Buscar por Legajo</label>
+                    <input 
+                      type="text" 
+                      className="input-field" 
+                      placeholder="Ej: 1042..." 
+                      value={legajo} 
+                      onChange={(e) => { setLegajo(e.target.value); setPage(1); }} 
+                    />
+                  </div>
+
+                  <div className="input-group">
+                    <label className="input-label">Buscar por Empleado</label>
+                    <input 
+                      type="text" 
+                      className="input-field" 
+                      placeholder="Nombre..." 
+                      value={empleado} 
+                      onChange={(e) => { setEmpleado(e.target.value); setPage(1); }} 
+                    />
+                  </div>
+
+                  <div className="input-group">
+                    <label className="input-label">Departamento</label>
+                    <select 
+                      className="input-field" 
+                      value={deptId} 
+                      onChange={(e) => { setDeptId(e.target.value); setPage(1); }}
+                    >
+                      <option value="">Todos los Departamentos</option>
+                      {departamentos.map(d => (
+                        <option key={d.deptId} value={d.deptId}>{d.deptName}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </section>
+
+              {/* EMPLEADOS TURNOS TABLE */}
+              <section className="glass-panel table-panel">
+                <div className="table-responsive">
+                  <table className="custom-table">
+                    <thead>
+                      <tr>
+                        <th>Legajo</th>
+                        <th>Empleado</th>
+                        <th>Departamento</th>
+                        <th>Tipo de Turno</th>
+                        <th>Horario Teórico</th>
+                        <th style={{ textAlign: 'center' }}>Hs Teóricas</th>
+                        <th>Fichadas Reales</th>
+                        <th>Desglose / Tramos Fichados</th>
+                        <th>Estado</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {loading ? (
+                        <tr>
+                          <td colSpan="9" style={{ textAlign: 'center', padding: '40px' }}>
+                            <RefreshCw size={24} className="spinner" style={{ margin: '0 auto 10px auto' }} />
+                            <p>Cargando verificación de turnos...</p>
+                          </td>
+                        </tr>
+                      ) : !empleadosTurnosData?.data?.length ? (
+                        <tr>
+                          <td colSpan="9" style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>
+                            No se encontraron empleados para los filtros seleccionados.
+                          </td>
+                        </tr>
+                      ) : (
+                        empleadosTurnosData.data.map(item => (
+                          <tr key={item.userid}>
+                            <td>
+                              <span className="badge-legajo">{item.legajo}</span>
+                            </td>
+                            <td style={{ fontWeight: 700, color: '#fff' }}>{item.empleado}</td>
+                            <td>
+                              <span className="dept-tag">{item.departamento}</span>
+                            </td>
+                            <td>
+                              {item.tipoHorario === 'CORTADO' ? (
+                                <span className="badge-turno-cortado">🔵 CORTADO</span>
+                              ) : item.tipoHorario === 'NOCTURNO' ? (
+                                <span className="badge-turno-nocturno">🌙 NOCTURNO</span>
+                              ) : (
+                                <span className="badge-turno-corrido">🟢 CORRIDO</span>
+                              )}
+                            </td>
+                            <td className="time-cell" style={{ color: '#fff', fontWeight: 600 }}>
+                              {item.horarioTeorico}
+                            </td>
+                            <td style={{ textAlign: 'center', fontWeight: 700, color: 'var(--text-muted)' }}>
+                              {item.horasTeoricas} hs
+                            </td>
+                            <td>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', fontSize: '0.85rem' }}>
+                                <span>Entrada: <strong style={{ color: '#10b981' }}>{item.entradaReal}</strong></span>
+                                <span>Salida: <strong style={{ color: '#06b6d4' }}>{item.salidaReal}</strong></span>
+                              </div>
+                            </td>
+                            <td>
+                              {item.tramos && item.tramos.length > 0 ? (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                  {item.tramos.map((t, idx) => (
+                                    <div key={idx} className="badge-tramo-chip">
+                                      <span style={{ color: 'var(--text-muted)', fontSize: '0.72rem' }}>{t.tramo}:</span>
+                                      <strong style={{ color: '#fff' }}>{t.entrada} ➔ {t.salida}</strong>
+                                      <span style={{ color: '#38bdf8', fontWeight: 600 }}>({t.duracion})</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <span style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>Sin tramos registrados</span>
+                              )}
+                            </td>
+                            <td>
+                              {item.estado === 'EXCEPCION' ? (
+                                <span className={getExceptionBadgeClass(item.excepcion?.classId)} title={item.excepcion?.whys || ''}>
+                                  <AlertCircle size={13} /> {item.excepcion?.className || 'Excepción'}
+                                </span>
+                              ) : item.estado === 'PUNCTUAL' ? (
+                                <span className="badge-status-punctual">
+                                  <CheckCircle2 size={13} /> Registrado ({item.duracionRealHs})
+                                </span>
+                              ) : item.estado === 'INCOMPLETE' ? (
+                                <span className="badge-status-incomplete">
+                                  <Clock3 size={13} /> Fichada Incompleta
+                                </span>
+                              ) : (
+                                <span className="badge-status-late" style={{ background: 'rgba(148, 163, 184, 0.1)', color: '#94a3b8', border: '1px solid rgba(148, 163, 184, 0.2)' }}>
+                                  <UserX size={13} /> Sin Registro
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* PAGINATION BAR FOR TURNOS */}
+                <div className="pagination-bar">
+                  <div className="pagination-info">
+                    Mostrando página <strong style={{ color: '#fff' }}>{page}</strong> de <strong style={{ color: '#fff' }}>{(empleadosTurnosData?.totalPages || 1).toLocaleString()}</strong> ({(empleadosTurnosData?.total || 0).toLocaleString()} total)
+                  </div>
+
+                  <div className="pagination-controls">
+                    <button 
+                      className="btn-page" 
+                      onClick={() => setPage(1)} 
+                      disabled={page === 1}
+                      title="Primera página"
+                    >
+                      <ChevronsLeft size={16} />
+                    </button>
+                    <button 
+                      className="btn-page" 
+                      onClick={() => setPage(p => Math.max(1, p - 1))} 
+                      disabled={page === 1}
+                      title="Página anterior"
+                    >
+                      <ChevronLeft size={16} />
+                    </button>
+
+                    <span style={{ fontSize: '0.85rem', padding: '0 8px', color: 'var(--text-muted)' }}>
+                      Pág. {page} / {empleadosTurnosData?.totalPages || 1}
+                    </span>
+
+                    <button 
+                      className="btn-page" 
+                      onClick={() => setPage(p => Math.min(empleadosTurnosData?.totalPages || 1, p + 1))} 
+                      disabled={page === (empleadosTurnosData?.totalPages || 1)}
+                      title="Página siguiente"
+                    >
+                      <ChevronRight size={16} />
+                    </button>
+                    <button 
+                      className="btn-page" 
+                      onClick={() => setPage(empleadosTurnosData?.totalPages || 1)} 
+                      disabled={page === (empleadosTurnosData?.totalPages || 1)}
+                      title="Última página"
+                    >
+                      <ChevronsRight size={16} />
+                    </button>
+                  </div>
+                </div>
+              </section>
+            </>
+          )}
+
+          {/* SUB-TAB 2: CATALOGO DE HORARIOS CONFIGURADOS */}
+          {subTabTurnos === 'catalogo' && turnosCatalog && (
+            <section className="glass-panel table-panel">
+              <div style={{ padding: '1rem 1.5rem', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: '#fff' }}>Catálogo de Turnos y Horarios Base (TimeTable MDB)</h3>
+                  <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>Lista de definiciones de horario, rangos de tolerancia y marcación configurados en el sistema CrossChex.</p>
+                </div>
+                <div className="status-badge" style={{ background: 'rgba(99, 102, 241, 0.1)', borderColor: 'rgba(99, 102, 241, 0.3)', color: '#818cf8' }}>
+                  <span>{turnosCatalog.totalTimetables} Turnos Registrados</span>
+                </div>
+              </div>
+
+              <div className="table-responsive">
+                <table className="custom-table">
+                  <thead>
+                    <tr>
+                      <th>ID Turno</th>
+                      <th>Nombre del Horario</th>
+                      <th>Tipo</th>
+                      <th>Entrada Teórica</th>
+                      <th>Salida Teórica</th>
+                      <th style={{ textAlign: 'center' }}>Duración J.</th>
+                      <th>Ventana Entrada (Desde-Hasta)</th>
+                      <th>Ventana Salida (Desde-Hasta)</th>
+                      <th style={{ textAlign: 'center' }}>Tolerancia Llegada</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {turnosCatalog.timetables.map(t => (
+                      <tr key={t.timeid}>
+                        <td>
+                          <span className="badge-legajo">#{t.timeid}</span>
+                        </td>
+                        <td style={{ fontWeight: 700, color: '#fff' }}>{t.name}</td>
+                        <td>
+                          {t.tipo === 'NOCTURNO' ? (
+                            <span className="badge-turno-nocturno">🌙 NOCTURNO</span>
+                          ) : (
+                            <span className="badge-turno-corrido">🟢 CORRIDO</span>
+                          )}
+                        </td>
+                        <td className="time-cell" style={{ color: '#10b981', fontWeight: 700 }}>{t.intime}</td>
+                        <td className="time-cell" style={{ color: '#06b6d4', fontWeight: 700 }}>{t.outtime}</td>
+                        <td style={{ textAlign: 'center', fontWeight: 700, color: '#fff' }}>{t.durationHs} hs</td>
+                        <td style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>{t.bIntime} ➔ {t.eIntime}</td>
+                        <td style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>{t.bOuttime} ➔ {t.eOuttime}</td>
+                        <td style={{ textAlign: 'center', color: t.latetime > 0 ? '#f59e0b' : '#10b981', fontWeight: 700 }}>
+                          +{t.latetime} min
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+        </div>
+      )}
+
+      {/* DETALLE DE EXCEPCIONES Y LICENCIAS VIEW */}
+      {activeTab === 'excepciones' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', marginTop: '1rem' }}>
+          {/* KPI METRICS GRID */}
+          <section className="kpi-grid">
+            <div className="glass-panel kpi-card" style={{ '--card-accent': '#6366f1' }}>
+              <div className="kpi-icon">
+                <FileText size={26} />
+              </div>
+              <div className="kpi-content">
+                <span className="kpi-value">{excepcionesTotal.toLocaleString()}</span>
+                <span className="kpi-label">Total Excepciones / Licencias</span>
+              </div>
+            </div>
+
+            <div className="glass-panel kpi-card" style={{ '--card-accent': '#10b981' }}>
+              <div className="kpi-icon">
+                <AlertCircle size={26} />
+              </div>
+              <div className="kpi-content">
+                <span className="kpi-value">{excepcionesClasses.length} Clases</span>
+                <span className="kpi-label">Tipos de Licencia CrossChex</span>
+              </div>
+            </div>
+
+            <div className="glass-panel kpi-card" style={{ '--card-accent': '#f59e0b' }}>
+              <div className="kpi-icon">
+                <Filter size={26} />
+              </div>
+              <div className="kpi-content">
+                <span className="kpi-value" style={{ fontSize: '1.15rem', color: '#fbbf24' }}>
+                  {selectedClassId 
+                    ? (excepcionesClasses.find(c => c.classId === Number(selectedClassId))?.className || 'Filtrado')
+                    : 'Todas las Clases'}
+                </span>
+                <span className="kpi-label">Filtro de Licencia Activo</span>
+              </div>
+            </div>
+
+            <div className="glass-panel kpi-card" style={{ '--card-accent': '#06b6d4' }}>
+              <div className="kpi-icon">
+                <Clock size={26} />
+              </div>
+              <div className="kpi-content">
+                <span className="kpi-value" style={{ color: '#22d3ee' }}>{elapsedMsExcepciones} ms</span>
+                <span className="kpi-label">Tiempo de Respuesta API</span>
+              </div>
+            </div>
+          </section>
+
+          {/* FILTER BAR FOR EXCEPCIONES */}
+          <section className="glass-panel filter-panel">
+            <div className="filter-row">
+              <div className="input-group">
+                <label className="input-label">Buscar por Legajo</label>
+                <input 
+                  type="text" 
+                  className="input-field" 
+                  placeholder="Ej: 5830"
+                  value={legajo}
+                  onChange={(e) => { setLegajo(e.target.value); setPage(1); }}
+                />
+              </div>
+
+              <div className="input-group">
+                <label className="input-label">Nombre del Empleado</label>
+                <input 
+                  type="text" 
+                  className="input-field" 
+                  placeholder="Ej: Sosa Diego"
+                  value={empleado}
+                  onChange={(e) => { setEmpleado(e.target.value); setPage(1); }}
+                />
+              </div>
+
+              <div className="input-group">
+                <label className="input-label">Departamento</label>
+                <select 
+                  className="input-field"
+                  value={deptId}
+                  onChange={(e) => { setDeptId(e.target.value); setPage(1); }}
+                >
+                  <option value="">Todos los Departamentos</option>
+                  {departamentos.map(d => (
+                    <option key={d.deptId} value={d.deptId}>{d.deptName}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="input-group">
+                <label className="input-label">Tipo de Excepción / Licencia</label>
+                <select 
+                  className="input-field"
+                  value={selectedClassId}
+                  onChange={(e) => { setSelectedClassId(e.target.value); setPage(1); }}
+                >
+                  <option value="">Todas las Excepciones ({excepcionesClasses.length})</option>
+                  {excepcionesClasses.map(c => (
+                    <option key={c.classId} value={c.classId}>
+                      {c.className} ({c.showAs})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="input-group">
+                <label className="input-label">Fecha Desde</label>
+                <input 
+                  type="date" 
+                  className="input-field"
+                  value={fechaDesde}
+                  onChange={(e) => { setFechaDesde(e.target.value); setPage(1); }}
+                />
+              </div>
+
+              <div className="input-group">
+                <label className="input-label">Fecha Hasta</label>
+                <input 
+                  type="date" 
+                  className="input-field"
+                  value={fechaHasta}
+                  onChange={(e) => { setFechaHasta(e.target.value); setPage(1); }}
+                />
+              </div>
+            </div>
+
+            <div className="filter-actions">
+              <button className="btn-secondary" onClick={() => { setFechaDesde(getTodayString()); setFechaHasta(getTodayString()); setPage(1); }} title="Filtrar excepciones activas hoy">
+                <Calendar size={16} /> Ver Hoy
+              </button>
+
+              <button className="btn-secondary" onClick={() => { setFechaDesde(''); setFechaHasta(''); setPage(1); }} title="Ver todo el historial de licencias">
+                Histórico Completo
+              </button>
+
+              <button className="btn-secondary" onClick={handleResetFilters}>
+                <Filter size={16} /> Restablecer Filtros
+              </button>
+              
+              <button className="btn-primary" onClick={handleExportExcepcionesExcel} disabled={!excepcionesList.length}>
+                <FileSpreadsheet size={16} /> Exportar Excepciones (.xlsx)
+              </button>
+            </div>
+          </section>
+
+          {/* EXCEPCIONES DATA TABLE PANEL */}
+          <section className="glass-panel table-panel">
+            <div className="table-header-info">
+              <div className="table-title-group">
+                <h2 className="table-title">Detalle de Excepciones, Licencias y Permisos (UserLeave MDB)</h2>
+                <span className="bench-badge">
+                  ⚡ {excepcionesTotal.toLocaleString()} registros ({elapsedMsExcepciones}ms)
+                </span>
+              </div>
+
+              <div className="input-group" style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <span className="input-label" style={{ marginBottom: 0 }}>Filas por página:</span>
+                <select 
+                  className="input-field" 
+                  value={limit} 
+                  onChange={(e) => { setLimit(Number(e.target.value)); setPage(1); }}
+                  style={{ padding: '6px 28px 6px 10px', fontSize: '0.85rem' }}
+                >
+                  <option value="25">25</option>
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                  <option value="200">200</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="table-responsive">
+              {loading ? (
+                <div className="loading-state">
+                  <div className="spinner"></div>
+                  <p>Cargando excepciones y licencias registradas...</p>
+                </div>
+              ) : excepcionesList.length === 0 ? (
+                <div className="loading-state" style={{ padding: '3rem 1rem', textAlign: 'center' }}>
+                  <HelpCircle size={40} style={{ color: 'var(--text-muted)', marginBottom: '1rem', opacity: 0.6 }} />
+                  <p style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text-main)', marginBottom: '0.5rem' }}>
+                    No se encontraron excepciones para los filtros seleccionados.
+                  </p>
+                  <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '1.2rem' }}>
+                    Intenta ampliar el rango de fechas o limpiar los filtros de búsqueda.
+                  </p>
+                  <button className="btn-secondary" onClick={() => { setFechaDesde(''); setFechaHasta(''); setSelectedClassId(''); setPage(1); }} style={{ margin: '0 auto' }}>
+                    <Calendar size={16} /> Ver Todo el Histórico
+                  </button>
+                </div>
+              ) : (
+                <table className="custom-table">
+                  <thead>
+                    <tr>
+                      <th>Legajo</th>
+                      <th>Empleado</th>
+                      <th>Departamento</th>
+                      <th>Clase / Tipo de Excepción</th>
+                      <th>Fecha y Hora Inicio</th>
+                      <th>Fecha y Hora Fin</th>
+                      <th>Motivo / Justificación</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {excepcionesList.map((row, idx) => (
+                      <tr key={`${row.userid}_${row.beginTime}_${idx}`}>
+                        <td>
+                          <span className="badge-legajo">{row.legajo}</span>
+                        </td>
+                        <td style={{ fontWeight: 700, color: '#fff' }}>{row.empleado}</td>
+                        <td>
+                          <span className="dept-tag">{row.departamento}</span>
+                        </td>
+                        <td>
+                          <span className={getExceptionBadgeClass(row.classId)}>
+                            <AlertCircle size={13} /> {row.className}
+                          </span>
+                        </td>
+                        <td className="time-cell" style={{ color: '#10b981', fontWeight: 600 }}>
+                          {row.beginTime}
+                        </td>
+                        <td className="time-cell" style={{ color: '#06b6d4', fontWeight: 600 }}>
+                          {row.endTime}
+                        </td>
+                        <td style={{ color: row.whys ? '#e2e8f0' : 'var(--text-dim)', fontSize: '0.85rem' }}>
+                          {row.whys || 'Sin observaciones'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            {/* PAGINATION BAR FOR EXCEPCIONES */}
+            <div className="pagination-bar">
+              <div className="pagination-info">
+                Mostrando página <strong style={{ color: '#fff' }}>{page}</strong> de <strong style={{ color: '#fff' }}>{excepcionesTotalPages.toLocaleString()}</strong> ({excepcionesTotal.toLocaleString()} total)
+              </div>
+
+              <div className="pagination-controls">
+                <button 
+                  className="btn-page" 
+                  onClick={() => setPage(1)} 
+                  disabled={page === 1}
+                  title="Primera página"
+                >
+                  <ChevronsLeft size={16} />
+                </button>
+                <button 
+                  className="btn-page" 
+                  onClick={() => setPage(p => Math.max(1, p - 1))} 
+                  disabled={page === 1}
+                  title="Página anterior"
+                >
+                  <ChevronLeft size={16} />
+                </button>
+
+                <span style={{ fontSize: '0.85rem', padding: '0 8px', color: 'var(--text-muted)' }}>
+                  Pág. {page} / {excepcionesTotalPages}
+                </span>
+
+                <button 
+                  className="btn-page" 
+                  onClick={() => setPage(p => Math.min(excepcionesTotalPages, p + 1))} 
+                  disabled={page === excepcionesTotalPages}
+                  title="Página siguiente"
+                >
+                  <ChevronRight size={16} />
+                </button>
+                <button 
+                  className="btn-page" 
+                  onClick={() => setPage(excepcionesTotalPages)} 
+                  disabled={page === excepcionesTotalPages}
+                  title="Última página"
+                >
+                  <ChevronsRight size={16} />
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {/* ASISTENCIA Y FICHADAS VIEWS */}
+      {(activeTab === 'asistencia' || activeTab === 'fichadas') && (
+        <>
+          {/* KPI METRICS GRID */}
+          {activeTab === 'asistencia' ? (
         <section className="kpi-grid">
           <div className="glass-panel kpi-card" style={{ '--card-accent': '#6366f1' }}>
             <div className="kpi-icon">
@@ -1207,6 +2044,19 @@ export default function App() {
                   <option value="PUNCTUAL">🟢 A Tiempo (Puntual)</option>
                   <option value="LATE">🔴 Tardanza</option>
                   <option value="INCOMPLETE">🟡 Fichada Incompleta</option>
+                  <option value="EXCEPCION">🟠 Excepción / Licencia</option>
+                </select>
+              </div>
+
+              <div className="input-group">
+                <label className="input-label">Orden por Fecha</label>
+                <select 
+                  className="input-field"
+                  value={ordenFecha}
+                  onChange={(e) => { setOrdenFecha(e.target.value); setPage(1); }}
+                >
+                  <option value="ASC">▲ Cronológico (Del 1 al 31)</option>
+                  <option value="DESC">▼ Reciente Primero (Del 31 al 1)</option>
                 </select>
               </div>
             </>
@@ -1311,7 +2161,19 @@ export default function App() {
                     <th>Legajo</th>
                     <th>Empleado</th>
                     <th>Departamento</th>
-                    <th>Fecha</th>
+                    <th 
+                      className="col-fecha" 
+                      onClick={() => { setOrdenFecha(prev => prev === 'ASC' ? 'DESC' : 'ASC'); setPage(1); }}
+                      style={{ cursor: 'pointer', userSelect: 'none' }}
+                      title="Haz clic para alternar orden por fecha (Cronológico / Reciente)"
+                    >
+                      <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                        <span>Fecha</span>
+                        <span style={{ fontSize: '0.72rem', color: '#818cf8', background: 'rgba(99, 102, 241, 0.2)', padding: '2px 6px', borderRadius: '4px', border: '1px solid rgba(99, 102, 241, 0.35)' }}>
+                          {ordenFecha === 'ASC' ? '▲ 1 al 31' : '▼ 31 al 1'}
+                        </span>
+                      </div>
+                    </th>
                     <th>Tipo Horario</th>
                     <th>Horario Asignado</th>
                     <th>Entrada Real</th>
@@ -1331,7 +2193,11 @@ export default function App() {
                       <td>
                         <span className="dept-tag">{row.departamento}</span>
                       </td>
-                      <td className="time-cell">{row.fecha}</td>
+                      <td className="col-fecha">
+                        <span className="badge-fecha">
+                          {row.fecha}
+                        </span>
+                      </td>
                       <td>
                         {row.tipoHorario === 'NOCTURNO' && (
                           <span style={{ padding: '3px 8px', borderRadius: '6px', fontSize: '0.75rem', fontWeight: 700, background: 'rgba(139, 92, 246, 0.2)', color: '#c084fc', border: '1px solid rgba(139, 92, 246, 0.4)' }}>
@@ -1363,6 +2229,11 @@ export default function App() {
                         )}
                       </td>
                       <td>
+                        {row.estado === 'EXCEPCION' && (
+                          <span className={getExceptionBadgeClass(row.excepcion?.classId)} title={row.excepcion?.whys || ''}>
+                            <AlertCircle size={13} /> {row.excepcion?.className || 'Excepción'}
+                          </span>
+                        )}
                         {row.estado === 'PUNCTUAL' && (
                           <span className="badge-status-punctual">
                             <CheckCircle2 size={13} /> A Tiempo
@@ -1475,6 +2346,8 @@ export default function App() {
           </div>
         </div>
       </section>
+    </>
+  )}
 
       {/* DRAWER MODAL FOR RECORD DETAIL */}
       {selectedRecord && (
