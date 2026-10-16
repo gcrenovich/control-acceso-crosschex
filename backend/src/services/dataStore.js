@@ -315,10 +315,45 @@ export const loadData = async () => {
     }
   }
 
+  // Load Devices (FingerClient: entrada/salida)
+  devicesMap.clear();
+  const devicesPath = path.join(DATA_DIR, 'devices.json');
+  if (fs.existsSync(devicesPath)) {
+    try {
+      const raw = fs.readFileSync(devicesPath, 'utf8').replace(/^\uFEFF/, '').trim();
+      if (raw) {
+        const devs = JSON.parse(raw);
+        if (Array.isArray(devs)) {
+          devs.forEach(d => {
+            const num = Number(d.ClientNumber);
+            const cid = Number(d.Clientid);
+            const name = String(d.ClientName || `Molinete ${num}`).trim();
+            const recStatus = Number(d.RecStatus || 1);
+            const isOut = recStatus === 2 || name.toLowerCase().includes('salida');
+            const devObj = {
+              clientNumber: num,
+              clientId: cid,
+              clientName: name,
+              ipaddress: String(d.ipaddress || ''),
+              recStatus,
+              tipo: isOut ? 'OUT' : 'IN'
+            };
+            devicesMap.set(num, devObj);
+            devicesMap.set(cid, devObj);
+          });
+        }
+      }
+    } catch (err) {
+      console.error('⚠️ Error al parsear devices.json:', err.message);
+    }
+  }
+
   // Stream CSV Checkins & Build High-Performance Indices
   checkinList = [];
   checkinsByDate.clear();
+  checkinsByOperationalDate.clear();
   checkinsByUser.clear();
+  checkinsByUserAndOpDate.clear();
 
   if (fs.existsSync(checkinPath)) {
     const fileStream = fs.createReadStream(checkinPath);
@@ -331,11 +366,25 @@ export const loadData = async () => {
 
       const parts = line.split(',');
       if (parts.length >= 5) {
-        const logid = Number(parts[0]);
-        const userid = Number(parts[1]);
-        const checkTime = parts[2];
-        const sensorid = Number(parts[3]);
-        const temp = Number(parts[4]) || 0;
+        let logid, userid, checkTime, rawCheckType, sensorid, temp;
+
+        if (parts.length >= 6) {
+          // Formato nuevo con CheckType: Logid,userid,CheckTime,CheckType,Sensorid,temperature
+          logid = Number(parts[0]);
+          userid = Number(parts[1]);
+          checkTime = parts[2];
+          rawCheckType = parts[3] !== '' ? Number(parts[3]) : null;
+          sensorid = Number(parts[4]);
+          temp = Number(parts[5]) || 0;
+        } else {
+          // Formato anterior de 5 columnas: Logid,userid,CheckTime,Sensorid,temperature
+          logid = Number(parts[0]);
+          userid = Number(parts[1]);
+          checkTime = parts[2];
+          rawCheckType = null;
+          sensorid = Number(parts[3]);
+          temp = Number(parts[4]) || 0;
+        }
 
         const checkYear = parseInt(checkTime.substring(0, 4), 10);
         const currentYear = new Date().getFullYear();
@@ -350,6 +399,26 @@ export const loadData = async () => {
           deptId: 0
         };
 
+        const devObj = devicesMap.get(sensorid);
+        const molineteNombre = devObj ? devObj.clientName : `Molinete ${sensorid}`;
+
+        // Determinación inequívoca de IN (Ingreso) vs OUT (Salida)
+        let tipoRegistro = 'IN';
+        if (rawCheckType === 0) {
+          tipoRegistro = 'IN';
+        } else if (rawCheckType === 1) {
+          tipoRegistro = 'OUT';
+        } else if (devObj) {
+          tipoRegistro = devObj.tipo;
+        } else if (sensorid === 3 || sensorid === 4) {
+          tipoRegistro = 'OUT';
+        } else {
+          tipoRegistro = 'IN';
+        }
+
+        const tipoRegistroTexto = tipoRegistro === 'IN' ? 'Ingreso' : 'Salida';
+        const fechaOperativa = getOperationalDate(checkTime);
+
         const checkinItem = {
           logid,
           userid,
@@ -360,19 +429,32 @@ export const loadData = async () => {
           fechaHora: checkTime,
           fecha: checkTime.substring(0, 10),
           hora: checkTime.substring(11, 19),
+          fechaOperativa,
+          checkType: rawCheckType,
+          tipoRegistro,
+          tipoRegistroTexto,
           molineteId: sensorid,
+          molineteNombre,
           temperatura: temp
         };
 
         checkinList.push(checkinItem);
 
-        // Date index
+        // Date index (calendario civil)
         let dateArr = checkinsByDate.get(checkinItem.fecha);
         if (!dateArr) {
           dateArr = [];
           checkinsByDate.set(checkinItem.fecha, dateArr);
         }
         dateArr.push(checkinItem);
+
+        // Operational Date index (jornada 06:00 a 06:00)
+        let opDateArr = checkinsByOperationalDate.get(fechaOperativa);
+        if (!opDateArr) {
+          opDateArr = [];
+          checkinsByOperationalDate.set(fechaOperativa, opDateArr);
+        }
+        opDateArr.push(checkinItem);
 
         // User index
         let userArr = checkinsByUser.get(userid);
@@ -381,6 +463,15 @@ export const loadData = async () => {
           checkinsByUser.set(userid, userArr);
         }
         userArr.push(checkinItem);
+
+        // User and Operational Date index
+        const userOpKey = `${userid}_${fechaOperativa}`;
+        let userOpArr = checkinsByUserAndOpDate.get(userOpKey);
+        if (!userOpArr) {
+          userOpArr = [];
+          checkinsByUserAndOpDate.set(userOpKey, userOpArr);
+        }
+        userOpArr.push(checkinItem);
       }
     }
   }
@@ -439,6 +530,7 @@ export const saveIngestedData = async (fileName, content) => {
     'user_temp_shifts.csv',
     'leave_classes.json',
     'user_leaves.json',
+    'devices.json',
     'checkinout.csv'
   ]);
 
