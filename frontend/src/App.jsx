@@ -141,6 +141,8 @@ export default function App() {
   const [fechaDesde, setFechaDesde] = useState(getTodayString());
   const [fechaHasta, setFechaHasta] = useState(getTodayString());
   const [molineteId, setMolineteId] = useState('');
+  const [tipoRegistroFilter, setTipoRegistroFilter] = useState(''); // '' | 'IN' | 'OUT'
+  const [useOperationalDate, setUseOperationalDate] = useState(true);
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(50);
 
@@ -197,6 +199,8 @@ export default function App() {
       if (fechaDesde) queryParams.append('fechaDesde', fechaDesde);
       if (fechaHasta) queryParams.append('fechaHasta', fechaHasta);
       if (molineteId) queryParams.append('molineteId', molineteId);
+      if (tipoRegistroFilter) queryParams.append('tipoRegistro', tipoRegistroFilter);
+      if (useOperationalDate) queryParams.append('useOperationalDate', 'true');
       queryParams.append('page', page);
       queryParams.append('limit', limit);
 
@@ -214,7 +218,7 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [legajo, empleado, deptId, fechaDesde, fechaHasta, molineteId, page, limit]);
+  }, [legajo, empleado, deptId, fechaDesde, fechaHasta, molineteId, tipoRegistroFilter, useOperationalDate, page, limit]);
 
   // Fetch Asistencia Report
   const fetchAsistencia = useCallback(async () => {
@@ -502,6 +506,8 @@ export default function App() {
     setFechaDesde(getTodayString());
     setFechaHasta(getTodayString());
     setMolineteId('');
+    setTipoRegistroFilter('');
+    setUseOperationalDate(true);
     setEstadoFilter('');
     setTipoHorarioFilter('TODOS');
     setHorarioEntrada('08:00');
@@ -518,13 +524,17 @@ export default function App() {
       'Legajo': row.legajo,
       'Empleado': row.empleado,
       'Departamento': row.departamento,
-      'Fecha': row.fecha,
+      'Fecha Operativa (6am-6am)': row.fecha,
+      'Tipo Horario': row.tipoHorario,
       'Horario Asignado': row.horarioAsignado,
       'Entrada Real': row.entradaReal,
       'Salida Real': row.salidaReal,
-      'Horas Trabajadas': row.duracionHoras,
+      'Horas Netas Trabajadas': row.horasTrabajadas || row.duracionHoras,
+      'Horas Descanso': row.horasDescanso || '00:00',
+      'Cantidad Tramos': row.tramos ? row.tramos.length : 1,
+      'Detalle Tramos': row.tramos ? row.tramos.map((t, idx) => `Tramo ${idx + 1}: ${t.entradaReal} - ${t.salidaReal} (${t.duracionHoras}hs)`).join(' | ') : `${row.entradaReal} - ${row.salidaReal}`,
       'Minutos Tardanza': row.minutosTardanza > 0 ? `${row.minutosTardanza} min` : '0 min',
-      'Estado': row.estado === 'PUNCTUAL' ? 'A Tiempo' : row.estado === 'LATE' ? 'Tardanza' : 'Fichada Incompleta',
+      'Estado': row.estado === 'PUNCTUAL' ? 'A Tiempo' : row.estado === 'LATE' ? 'Tardanza' : row.estado === 'EXCEPCION' ? `Excepción (${row.excepcion?.className || ''})` : 'Fichada Incompleta',
       'Molinete Entrada': row.molineteEntrada ? `Molinete ${row.molineteEntrada}` : '-',
       'Molinete Salida': row.molineteSalida ? `Molinete ${row.molineteSalida}` : '-'
     }));
@@ -543,8 +553,11 @@ export default function App() {
       'Legajo': row.legajo,
       'Empleado': row.empleado,
       'Departamento': row.departamento,
-      'Fecha Hora': row.fechaHora,
-      'Molinete': `Molinete ${row.molineteId}`,
+      'Fecha y Hora': row.fechaHora,
+      'Fecha Operativa (6am-6am)': row.fechaOperativa || '-',
+      'Tipo Registro': row.tipoRegistro === 'IN' ? 'IN (Ingreso)' : 'OUT (Salida)',
+      'Dispositivo / Molinete': row.molineteNombre || `Molinete #${row.molineteId}`,
+      'Sensor ID': row.molineteId,
       'Temperatura': row.temperatura > 0 ? `${row.temperatura}°C` : 'Normal'
     }));
 
@@ -592,6 +605,7 @@ export default function App() {
           'Salidas de trabajo [Minutos]': row.salidasTrabajoMin,
           'Salidas [Horas]': row.salidasHs,
           'Tiempo trabajado [Horas]': row.tiempoTrabajadoHs,
+          'Tiempo descanso [Horas]': row.horasDescansoHs || '00:00',
           'Tiempo cumplido [Horas]': row.tiempoCumplidoHs,
           'Presentismo [%]': `${row.presentismoPct}%`,
           'Enfermedad': row.enfermedad,
@@ -745,6 +759,31 @@ export default function App() {
       {/* CENSO Y GRÁFICAS VIEW */}
       {activeTab === 'censo' && censoData && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', marginTop: '1rem' }}>
+          {/* OPERATIONAL DAY & REALTIME STATUS BANNER */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem', background: 'rgba(99, 102, 241, 0.08)', padding: '0.9rem 1.4rem', borderRadius: '12px', border: '1px solid rgba(99, 102, 241, 0.25)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <Clock size={22} style={{ color: '#818cf8' }} />
+              <div>
+                <span style={{ fontWeight: 800, color: '#fff', fontSize: '0.95rem', letterSpacing: '0.2px' }}>
+                  Jornada Operativa CrossChex: 06:00 AM a 06:00 AM (+1 día)
+                </span>
+                <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                  Fecha operativa evaluada: <strong style={{ color: '#fff' }}>{censoData.fecha}</strong> | Turnos nocturnos (21 a 05 hs) y descansos intermedios (12 a 14 hs) computados automáticamente.
+                </p>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: '1.2rem', alignItems: 'center', flexWrap: 'wrap', fontSize: '0.85rem' }}>
+              <span style={{ color: '#10b981', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ width: '9px', height: '9px', borderRadius: '50%', background: '#10b981', boxShadow: '0 0 8px #10b981' }}></span>
+                En Planta (Último IN): {censoData.resumen.General.adentro ?? censoData.resumen.General.ingresaron}
+              </span>
+              <span style={{ color: '#fbbf24', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ width: '9px', height: '9px', borderRadius: '50%', background: '#fbbf24' }}></span>
+                En Descanso / Fuera (Último OUT): {censoData.resumen.General.descansoSalieron ?? 0}
+              </span>
+            </div>
+          </div>
+
           {/* CATEGORIES DONUT CHARTS GRID */}
           <section className="kpi-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))' }}>
             {/* PERMANENTES (P_) */}
@@ -757,8 +796,9 @@ export default function App() {
                 subtitle={`Plantilla Total: ${censoData.resumen.Permanente.total} pers.`}
                 colorIngresaron="#6366f1"
               />
-              <div style={{ display: 'flex', justifyContent: 'space-around', width: '100%', paddingTop: '0.6rem', borderTop: '1px solid rgba(255,255,255,0.08)', fontSize: '0.82rem' }}>
-                <span style={{ color: '#818cf8', fontWeight: 700 }}>🟢 Ingresaron: {censoData.resumen.Permanente.ingresaron}</span>
+              <div style={{ display: 'flex', justifyContent: 'space-around', width: '100%', paddingTop: '0.6rem', borderTop: '1px solid rgba(255,255,255,0.08)', fontSize: '0.78rem' }}>
+                <span style={{ color: '#10b981', fontWeight: 700 }} title="Personal actualmente adentro según su último registro IN">🟢 Adentro: {censoData.resumen.Permanente.adentro ?? censoData.resumen.Permanente.ingresaron}</span>
+                <span style={{ color: '#fbbf24', fontWeight: 700 }} title="Personal que fichó salida transitoria / descanso">⏸️ Desc.: {censoData.resumen.Permanente.descansoSalieron ?? 0}</span>
                 <span style={{ color: '#f43f5e', fontWeight: 700 }}>🔴 Faltan: {censoData.resumen.Permanente.faltan}</span>
               </div>
             </div>
@@ -773,8 +813,9 @@ export default function App() {
                 subtitle={`Plantilla Total: ${censoData.resumen.Eventual.total} pers.`}
                 colorIngresaron="#f59e0b"
               />
-              <div style={{ display: 'flex', justifyContent: 'space-around', width: '100%', paddingTop: '0.6rem', borderTop: '1px solid rgba(255,255,255,0.08)', fontSize: '0.82rem' }}>
-                <span style={{ color: '#fbbf24', fontWeight: 700 }}>🟢 Ingresaron: {censoData.resumen.Eventual.ingresaron}</span>
+              <div style={{ display: 'flex', justifyContent: 'space-around', width: '100%', paddingTop: '0.6rem', borderTop: '1px solid rgba(255,255,255,0.08)', fontSize: '0.78rem' }}>
+                <span style={{ color: '#10b981', fontWeight: 700 }}>🟢 Adentro: {censoData.resumen.Eventual.adentro ?? censoData.resumen.Eventual.ingresaron}</span>
+                <span style={{ color: '#fbbf24', fontWeight: 700 }}>⏸️ Desc.: {censoData.resumen.Eventual.descansoSalieron ?? 0}</span>
                 <span style={{ color: '#f43f5e', fontWeight: 700 }}>🔴 Faltan: {censoData.resumen.Eventual.faltan}</span>
               </div>
             </div>
@@ -789,8 +830,9 @@ export default function App() {
                 subtitle={`Plantilla Total: ${censoData.resumen.Transitorio.total} pers.`}
                 colorIngresaron="#06b6d4"
               />
-              <div style={{ display: 'flex', justifyContent: 'space-around', width: '100%', paddingTop: '0.6rem', borderTop: '1px solid rgba(255,255,255,0.08)', fontSize: '0.82rem' }}>
-                <span style={{ color: '#22d3ee', fontWeight: 700 }}>🟢 Ingresaron: {censoData.resumen.Transitorio.ingresaron}</span>
+              <div style={{ display: 'flex', justifyContent: 'space-around', width: '100%', paddingTop: '0.6rem', borderTop: '1px solid rgba(255,255,255,0.08)', fontSize: '0.78rem' }}>
+                <span style={{ color: '#10b981', fontWeight: 700 }}>🟢 Adentro: {censoData.resumen.Transitorio.adentro ?? censoData.resumen.Transitorio.ingresaron}</span>
+                <span style={{ color: '#fbbf24', fontWeight: 700 }}>⏸️ Desc.: {censoData.resumen.Transitorio.descansoSalieron ?? 0}</span>
                 <span style={{ color: '#f43f5e', fontWeight: 700 }}>🔴 Faltan: {censoData.resumen.Transitorio.faltan}</span>
               </div>
             </div>
@@ -805,8 +847,9 @@ export default function App() {
                 subtitle={`Plantilla Total: ${censoData.resumen.General.total} pers.`}
                 colorIngresaron="#10b981"
               />
-              <div style={{ display: 'flex', justifyContent: 'space-around', width: '100%', paddingTop: '0.6rem', borderTop: '1px solid rgba(255,255,255,0.08)', fontSize: '0.82rem' }}>
-                <span style={{ color: '#34d399', fontWeight: 700 }}>🟢 Ingresaron: {censoData.resumen.General.ingresaron}</span>
+              <div style={{ display: 'flex', justifyContent: 'space-around', width: '100%', paddingTop: '0.6rem', borderTop: '1px solid rgba(255,255,255,0.08)', fontSize: '0.78rem' }}>
+                <span style={{ color: '#10b981', fontWeight: 700 }}>🟢 Adentro: {censoData.resumen.General.adentro ?? censoData.resumen.General.ingresaron}</span>
+                <span style={{ color: '#fbbf24', fontWeight: 700 }}>⏸️ Fuera: {censoData.resumen.General.descansoSalieron ?? 0}</span>
                 <span style={{ color: '#f43f5e', fontWeight: 700 }}>🔴 Faltan: {censoData.resumen.General.faltan}</span>
               </div>
             </div>
@@ -855,8 +898,9 @@ export default function App() {
                     <th>Departamento</th>
                     <th>Categoría</th>
                     <th style={{ textAlign: 'center' }}>Total Plantilla</th>
-                    <th style={{ textAlign: 'center' }}>Ingresaron (Presentes)</th>
-                    <th style={{ textAlign: 'center' }}>Faltan (Ausentes)</th>
+                    <th style={{ textAlign: 'center' }}>🟢 En Planta (Adentro)</th>
+                    <th style={{ textAlign: 'center' }}>⏸️ Descanso / Fuera</th>
+                    <th style={{ textAlign: 'center' }}>🔴 Faltan (Ausentes)</th>
                     <th>% Cumplimiento Asistencia</th>
                   </tr>
                 </thead>
@@ -880,7 +924,10 @@ export default function App() {
                         </td>
                         <td style={{ textAlign: 'center', fontWeight: 700 }}>{d.total}</td>
                         <td style={{ textAlign: 'center', color: '#10b981', fontWeight: 800 }}>
-                          {d.ingresaron}
+                          {d.adentro ?? d.ingresaron}
+                        </td>
+                        <td style={{ textAlign: 'center', color: '#fbbf24', fontWeight: 700 }}>
+                          {d.descansoSalieron ?? 0}
                         </td>
                         <td style={{ textAlign: 'center', color: '#f43f5e', fontWeight: 800 }}>
                           {d.faltan}
@@ -1062,6 +1109,7 @@ export default function App() {
                         <th>Salidas de trabajo [Minutos]</th>
                         <th>Salidas [Horas]</th>
                         <th>Tiempo trabajado [Horas]</th>
+                        <th>Tiempo descanso [Horas]</th>
                         <th>Tiempo cumplido [Horas]</th>
                         <th>Presentismo</th>
                         <th>Enfermedad</th>
@@ -1109,6 +1157,7 @@ export default function App() {
                           <td style={{ textAlign: 'center' }}>{row.salidasTrabajoMin}</td>
                           <td style={{ textAlign: 'center' }}>{row.salidasHs}</td>
                           <td className="time-cell" style={{ fontWeight: 700, color: '#fff' }}>{row.tiempoTrabajadoHs} hs</td>
+                          <td className="time-cell" style={{ color: '#fbbf24', textAlign: 'center' }}>{row.horasDescansoHs || '00:00'} hs</td>
                           <td className="time-cell">{row.tiempoCumplidoHs} hs</td>
                           <td>
                             <span className={row.presentismoPct >= 80 ? 'badge-status-punctual' : row.presentismoPct >= 50 ? 'badge-status-incomplete' : 'badge-status-late'}>
@@ -2062,19 +2111,46 @@ export default function App() {
               </div>
             </>
           ) : (
-            <div className="input-group">
-              <label className="input-label">Molinete / Sensor ID</label>
-              <select 
-                className="input-field"
-                value={molineteId}
-                onChange={(e) => { setMolineteId(e.target.value); setPage(1); }}
-              >
-                <option value="">Todos los Molinetes ({molineteOptions.length})</option>
-                {molineteOptions.map(m => (
-                  <option key={m} value={m}>Molinete #{m} ({stats.molineteCounts[m].toLocaleString()} fichadas)</option>
-                ))}
-              </select>
-            </div>
+            <>
+              <div className="input-group">
+                <label className="input-label">Tipo de Marcación</label>
+                <select 
+                  className="input-field"
+                  value={tipoRegistroFilter}
+                  onChange={(e) => { setTipoRegistroFilter(e.target.value); setPage(1); }}
+                >
+                  <option value="">Todos los Registros (IN y OUT)</option>
+                  <option value="IN">🟢 Solo Ingresos (IN / Entrada)</option>
+                  <option value="OUT">🔴 Solo Salidas (OUT / Salida)</option>
+                </select>
+              </div>
+
+              <div className="input-group">
+                <label className="input-label">Molinete / Dispositivo</label>
+                <select 
+                  className="input-field"
+                  value={molineteId}
+                  onChange={(e) => { setMolineteId(e.target.value); setPage(1); }}
+                >
+                  <option value="">Todos los Molinetes ({molineteOptions.length})</option>
+                  {molineteOptions.map(m => (
+                    <option key={m} value={m}>Molinete #{m} ({stats?.molineteCounts?.[m]?.toLocaleString() || 0} fichadas)</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="input-group">
+                <label className="input-label">Jornada (06:00 a 06:00)</label>
+                <select 
+                  className="input-field"
+                  value={useOperationalDate ? 'true' : 'false'}
+                  onChange={(e) => { setUseOperationalDate(e.target.value === 'true'); setPage(1); }}
+                >
+                  <option value="true">🕒 06:00 AM a 06:00 AM (+1d)</option>
+                  <option value="false">📅 Fecha Natural (00 a 24 hs)</option>
+                </select>
+              </div>
+            </>
           )}
         </div>
 
@@ -2169,7 +2245,7 @@ export default function App() {
                       title="Haz clic para alternar orden por fecha (Cronológico / Reciente)"
                     >
                       <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-                        <span>Fecha</span>
+                        <span>Fecha (6am-6am)</span>
                         <span style={{ fontSize: '0.72rem', color: '#818cf8', background: 'rgba(99, 102, 241, 0.2)', padding: '2px 6px', borderRadius: '4px', border: '1px solid rgba(99, 102, 241, 0.35)' }}>
                           {ordenFecha === 'ASC' ? '▲ 1 al 31' : '▼ 31 al 1'}
                         </span>
@@ -2179,7 +2255,9 @@ export default function App() {
                     <th>Horario Asignado</th>
                     <th>Entrada Real</th>
                     <th>Salida Real</th>
-                    <th>Duración</th>
+                    <th>Horas Netas</th>
+                    <th>Descanso</th>
+                    <th style={{ textAlign: 'center' }}>Tramos</th>
                     <th>Tardanza</th>
                     <th>Estado</th>
                   </tr>
@@ -2219,7 +2297,25 @@ export default function App() {
                       <td className="time-cell" style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>{row.horarioAsignado}</td>
                       <td className="time-cell" style={{ color: '#10b981', fontWeight: 600 }}>{row.entradaReal}</td>
                       <td className="time-cell">{row.salidaReal}</td>
-                      <td className="time-cell" style={{ color: '#06b6d4' }}>{row.duracionHoras}</td>
+                      <td className="time-cell" style={{ color: '#06b6d4', fontWeight: 700 }}>{row.horasTrabajadas || row.duracionHoras}</td>
+                      <td style={{ textAlign: 'center' }}>
+                        {row.horasDescansoNum > 0 ? (
+                          <span className="badge-descanso" title={`Tiempo de descanso deducido: ${row.horasDescanso}`}>
+                            ☕ {row.horasDescanso}
+                          </span>
+                        ) : (
+                          <span style={{ color: 'var(--text-muted)' }}>-</span>
+                        )}
+                      </td>
+                      <td style={{ textAlign: 'center' }}>
+                        {row.tramos && row.tramos.length > 0 ? (
+                          <span className="badge-tramos-count" title={row.tramos.map((t, i) => `Tramo ${i + 1}: ${t.entradaReal} a ${t.salidaReal} (${t.duracionHoras}hs)`).join(' | ')}>
+                            {row.tramos.length} {row.tramos.length === 1 ? 'tramo' : 'tramos'}
+                          </span>
+                        ) : (
+                          <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>1 tramo</span>
+                        )}
+                      </td>
                       <td>
                         {row.minutosTardanza > 0 ? (
                           <span style={{ color: '#f43f5e', fontWeight: 700, fontFamily: 'var(--font-mono)' }}>
@@ -2269,7 +2365,9 @@ export default function App() {
                     <th>Empleado</th>
                     <th>Departamento</th>
                     <th>Fecha y Hora</th>
-                    <th>Molinete</th>
+                    <th>Fecha Op. (6am-6am)</th>
+                    <th>Tipo Marcación</th>
+                    <th>Dispositivo / Molinete</th>
                     <th>Temperatura</th>
                   </tr>
                 </thead>
@@ -2284,9 +2382,23 @@ export default function App() {
                         <span className="dept-tag">{row.departamento}</span>
                       </td>
                       <td className="time-cell">{row.fechaHora}</td>
+                      <td className="time-cell" style={{ fontSize: '0.85rem', color: '#a5b4fc' }}>
+                        {row.fechaOperativa || '-'}
+                      </td>
                       <td>
-                        <span className="badge-molinete">
-                          Molinete #{row.molineteId}
+                        {row.tipoRegistro === 'IN' ? (
+                          <span className="badge-tipo-in">
+                            ↓ IN (Ingreso)
+                          </span>
+                        ) : (
+                          <span className="badge-tipo-out">
+                            ↑ OUT (Salida)
+                          </span>
+                        )}
+                      </td>
+                      <td>
+                        <span className="badge-molinete" style={{ textTransform: 'capitalize' }}>
+                          {row.molineteNombre || `Molinete #${row.molineteId}`}
                         </span>
                       </td>
                       <td className="time-cell">
@@ -2405,6 +2517,39 @@ export default function App() {
                     </span>
                   </div>
 
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                    <div className="input-group">
+                      <span className="input-label">Horas Netas Trabajadas</span>
+                      <span style={{ fontSize: '1.1rem', color: '#10b981', fontWeight: 800 }}>
+                        {selectedRecord.horasTrabajadas || selectedRecord.duracionHoras}
+                      </span>
+                    </div>
+
+                    <div className="input-group">
+                      <span className="input-label">Tiempo de Descanso</span>
+                      <span style={{ fontSize: '1.1rem', color: selectedRecord.horasDescansoNum > 0 ? '#fbbf24' : 'var(--text-muted)', fontWeight: 800 }}>
+                        {selectedRecord.horasDescansoNum > 0 ? selectedRecord.horasDescanso : 'Sin descanso'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* TRAMOS BREAKDOWN (SPLIT / NIGHT SHIFTS) */}
+                  {selectedRecord.tramos && selectedRecord.tramos.length > 0 && (
+                    <div style={{ marginTop: '0.5rem', background: 'rgba(0,0,0,0.3)', borderRadius: '10px', padding: '0.9rem', border: '1px solid rgba(255,255,255,0.08)' }}>
+                      <span className="input-label" style={{ marginBottom: '8px', display: 'block', color: '#818cf8', fontWeight: 700 }}>
+                        Desglose de Tramos (Jornada 06:00 a 06:00):
+                      </span>
+                      {selectedRecord.tramos.map((t, i) => (
+                        <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: i < selectedRecord.tramos.length - 1 ? '1px dashed rgba(255,255,255,0.1)' : 'none', fontSize: '0.85rem' }}>
+                          <span style={{ fontWeight: 600, color: '#fff' }}>Tramo {i + 1}:</span>
+                          <span style={{ color: '#10b981', fontWeight: 600 }}>🟢 IN: {t.entradaReal}</span>
+                          <span style={{ color: '#f43f5e', fontWeight: 600 }}>🔴 OUT: {t.salidaReal}</span>
+                          <span style={{ color: '#06b6d4', fontWeight: 700 }}>{t.duracionHoras} hs</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   <div className="input-group">
                     <span className="input-label">Minutos de Tardanza</span>
                     <span style={{ color: selectedRecord.minutosTardanza > 0 ? '#f43f5e' : '#10b981', fontWeight: 700 }}>
@@ -2420,13 +2565,49 @@ export default function App() {
               ) : (
                 <>
                   <div className="input-group">
-                    <span className="input-label">Fecha y Hora de Fichada</span>
-                    <span className="time-cell" style={{ fontSize: '1rem', color: '#fff' }}>{selectedRecord.fechaHora}</span>
+                    <span className="input-label">Tipo de Marcación</span>
+                    <div>
+                      {selectedRecord.tipoRegistro === 'IN' ? (
+                        <span className="badge-tipo-in" style={{ fontSize: '0.9rem', padding: '5px 12px' }}>
+                          ↓ IN (Ingreso / Entrada)
+                        </span>
+                      ) : (
+                        <span className="badge-tipo-out" style={{ fontSize: '0.9rem', padding: '5px 12px' }}>
+                          ↑ OUT (Salida)
+                        </span>
+                      )}
+                    </div>
                   </div>
 
                   <div className="input-group">
-                    <span className="input-label">Molinete de Acceso</span>
-                    <span className="badge-molinete" style={{ alignSelf: 'flex-start' }}>Molinete #{selectedRecord.molineteId}</span>
+                    <span className="input-label">Fecha y Hora de Fichada</span>
+                    <span className="time-cell" style={{ fontSize: '1.05rem', color: '#fff' }}>{selectedRecord.fechaHora}</span>
+                  </div>
+
+                  <div className="input-group">
+                    <span className="input-label">Fecha Operativa (Jornada 06:00 a 06:00)</span>
+                    <span className="time-cell" style={{ color: '#a5b4fc', fontWeight: 700 }}>
+                      {selectedRecord.fechaOperativa || '-'}
+                    </span>
+                  </div>
+
+                  <div className="input-group">
+                    <span className="input-label">Molinete / Dispositivo</span>
+                    <span className="badge-molinete" style={{ alignSelf: 'flex-start', textTransform: 'capitalize', fontSize: '0.9rem' }}>
+                      {selectedRecord.molineteNombre || `Molinete #${selectedRecord.molineteId}`}
+                    </span>
+                  </div>
+
+                  <div className="input-group">
+                    <span className="input-label">Sensor ID</span>
+                    <span className="time-cell">ID Sensor #{selectedRecord.molineteId}</span>
+                  </div>
+
+                  <div className="input-group">
+                    <span className="input-label">Temperatura Registrada</span>
+                    <span className="time-cell">
+                      {selectedRecord.temperatura > 0 ? `${selectedRecord.temperatura}°C` : 'Normal'}
+                    </span>
                   </div>
                 </>
               )}

@@ -555,21 +555,51 @@ export const saveIngestedData = async (fileName, content) => {
 };
 
 export const getStats = () => {
-  const todayStr = new Date().toISOString().substring(0, 10);
-  const todayArr = checkinsByDate.get(todayStr) || [];
-  const todayCount = todayArr.length;
+  const currentDtStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
+  const currentOpDate = getOperationalDate(currentDtStr);
+  const todayOpArr = checkinsByOperationalDate.get(currentOpDate) || [];
+  const todayCount = todayOpArr.length;
+
+  // Determinar cuántos empleados están actualmente adentro vs salieron en la jornada operativa actual
+  const userLastCheckin = new Map();
+  for (let i = 0; i < todayOpArr.length; i++) {
+    const c = todayOpArr[i];
+    const prev = userLastCheckin.get(c.userid);
+    if (!prev || c.fechaHora > prev.fechaHora) {
+      userLastCheckin.set(c.userid, c);
+    }
+  }
+
+  let personasAdentro = 0;
+  let personasSalieron = 0;
+  userLastCheckin.forEach(c => {
+    if (c.tipoRegistro === 'IN') personasAdentro++;
+    else personasSalieron++;
+  });
+
+  let totalIN = 0;
+  let totalOUT = 0;
   const molineteCounts = {};
   const deptoCounts = {};
 
   for (let i = 0; i < checkinList.length; i++) {
     const item = checkinList[i];
-    molineteCounts[item.molineteId] = (molineteCounts[item.molineteId] || 0) + 1;
+    if (item.tipoRegistro === 'IN') totalIN++;
+    else if (item.tipoRegistro === 'OUT') totalOUT++;
+
+    const mKey = item.molineteNombre || `Molinete ${item.molineteId}`;
+    molineteCounts[mKey] = (molineteCounts[mKey] || 0) + 1;
     deptoCounts[item.departamento] = (deptoCounts[item.departamento] || 0) + 1;
   }
 
   return {
     totalCheckins: checkinList.length,
     todayCheckins: todayCount,
+    fechaOperativaActual: currentOpDate,
+    personasAdentro,
+    personasSalieron,
+    totalIN,
+    totalOUT,
     totalUsers: usersMap.size,
     totalDepts: deptMap.size,
     totalExcepciones: userLeavesList.length,
@@ -582,11 +612,14 @@ export const getStats = () => {
   };
 };
 
-const getCheckinsForFilter = ({ fechaDesde, fechaHasta, userid }) => {
+const getCheckinsForFilter = ({ fechaDesde, fechaHasta, userid, useOperationalDate = true }) => {
+  const indexMap = useOperationalDate ? checkinsByOperationalDate : checkinsByDate;
+  const dateProp = useOperationalDate ? 'fechaOperativa' : 'fecha';
+
   if (userid && checkinsByUser.has(userid)) {
     let arr = checkinsByUser.get(userid) || [];
-    if (fechaDesde) arr = arr.filter(c => c.fecha >= fechaDesde);
-    if (fechaHasta) arr = arr.filter(c => c.fecha <= fechaHasta);
+    if (fechaDesde) arr = arr.filter(c => c[dateProp] >= fechaDesde);
+    if (fechaHasta) arr = arr.filter(c => c[dateProp] <= fechaHasta);
     return arr;
   }
 
@@ -599,7 +632,7 @@ const getCheckinsForFilter = ({ fechaDesde, fechaHasta, userid }) => {
       const curr = new Date(d1);
       while (curr <= d2) {
         const dStr = curr.toISOString().substring(0, 10);
-        const dayArr = checkinsByDate.get(dStr);
+        const dayArr = indexMap.get(dStr);
         if (dayArr && dayArr.length > 0) {
           result.push(...dayArr);
         }
@@ -611,13 +644,13 @@ const getCheckinsForFilter = ({ fechaDesde, fechaHasta, userid }) => {
 
   if (fechaDesde && !fechaHasta) {
     const today = new Date().toISOString().substring(0, 10);
-    return getCheckinsForFilter({ fechaDesde, fechaHasta: today, userid });
+    return getCheckinsForFilter({ fechaDesde, fechaHasta: today, userid, useOperationalDate });
   }
 
   return checkinList;
 };
 
-export const getFichadas = ({ legajo, empleado, deptId, fechaDesde, fechaHasta, molineteId, page = 1, limit = 50 }) => {
+export const getFichadas = ({ legajo, empleado, deptId, fechaDesde, fechaHasta, molineteId, tipoRegistro, useOperationalDate = false, page = 1, limit = 50 }) => {
   const startTime = Date.now();
   const pageNum = Math.max(1, parseInt(page, 10));
   const pageSize = Math.min(200, Math.max(1, parseInt(limit, 10)));
@@ -626,6 +659,7 @@ export const getFichadas = ({ legajo, empleado, deptId, fechaDesde, fechaHasta, 
   const searchEmpleado = empleado ? empleado.toString().toLowerCase().trim() : null;
   const filterDept = deptId !== undefined && deptId !== '' ? Number(deptId) : null;
   const filterMolinete = molineteId !== undefined && molineteId !== '' ? Number(molineteId) : null;
+  const filterTipo = tipoRegistro ? tipoRegistro.toString().toUpperCase().trim() : null;
 
   let targetUserid = null;
   if (searchLegajo) {
@@ -637,18 +671,20 @@ export const getFichadas = ({ legajo, empleado, deptId, fechaDesde, fechaHasta, 
     }
   }
 
-  const baseCheckins = getCheckinsForFilter({ fechaDesde, fechaHasta, userid: targetUserid });
+  const baseCheckins = getCheckinsForFilter({ fechaDesde, fechaHasta, userid: targetUserid, useOperationalDate });
   let filtered = baseCheckins;
 
-  if (searchLegajo || searchEmpleado || filterDept !== null || filterMolinete !== null || (baseCheckins === checkinList && (fechaDesde || fechaHasta))) {
+  if (searchLegajo || searchEmpleado || filterDept !== null || filterMolinete !== null || filterTipo !== null || (baseCheckins === checkinList && (fechaDesde || fechaHasta))) {
+    const dateProp = useOperationalDate ? 'fechaOperativa' : 'fecha';
     filtered = baseCheckins.filter(item => {
       if (searchLegajo && !item.legajo.toLowerCase().includes(searchLegajo)) return false;
       if (searchEmpleado && !item.empleado.toLowerCase().includes(searchEmpleado)) return false;
       if (filterDept !== null && item.deptId !== filterDept) return false;
       if (filterMolinete !== null && item.molineteId !== filterMolinete) return false;
+      if (filterTipo && item.tipoRegistro !== filterTipo) return false;
       if (baseCheckins === checkinList) {
-        if (fechaDesde && item.fecha < fechaDesde) return false;
-        if (fechaHasta && item.fecha > fechaHasta) return false;
+        if (fechaDesde && item[dateProp] < fechaDesde) return false;
+        if (fechaHasta && item[dateProp] > fechaHasta) return false;
       }
       return true;
     });
@@ -712,7 +748,295 @@ const getAssignedTimetables = (userid, dateStr) => {
   return [];
 };
 
-// Main Attendance Calculation Engine
+// Motor unificado de cálculo de jornada y emparejamiento de fichadas IN/OUT
+export const calculateUserDayAttendance = ({
+  userid,
+  user,
+  workDate,
+  checkins,
+  assignedTimetables = [],
+  defaultTolerance = 15,
+  horarioEntrada = '08:00',
+  horarioSalida = '17:00'
+}) => {
+  // Ordenar fichadas cronológicamente
+  const sorted = [...checkins].sort((a, b) => a.fechaHora.localeCompare(b.fechaHora));
+
+  // Desduplicar marcaciones consecutivas del mismo tipo en menos de 60 segundos (doble toque accidental en molinete)
+  const clean = [];
+  for (let i = 0; i < sorted.length; i++) {
+    const cur = sorted[i];
+    if (clean.length > 0) {
+      const prev = clean[clean.length - 1];
+      const diffSec = (new Date(cur.fechaHora).getTime() - new Date(prev.fechaHora).getTime()) / 1000;
+      if (prev.tipoRegistro === cur.tipoRegistro && diffSec < 60) {
+        continue;
+      }
+    }
+    clean.push(cur);
+  }
+
+  // Emparejar tramos IN -> OUT y registrar tiempos de descanso intermedios
+  const tramos = [];
+  let currentIn = null;
+  let totalTrabajadoMs = 0;
+  let totalDescansoMs = 0;
+  let prevOut = null;
+
+  for (let i = 0; i < clean.length; i++) {
+    const c = clean[i];
+    if (c.tipoRegistro === 'IN') {
+      if (currentIn) {
+        // Marcación IN previa sin OUT intermedio (cierre como incompleto)
+        tramos.push({
+          numero: tramos.length + 1,
+          entrada: currentIn.hora,
+          salida: '--:--:--',
+          entradaFechaHora: currentIn.fechaHora,
+          salidaFechaHora: null,
+          molineteEntrada: currentIn.molineteNombre,
+          molineteSalida: null,
+          duracionMin: 0,
+          duracionHs: 0,
+          descansoPosteriorMin: 0,
+          descansoPosteriorHs: '0.00',
+          estadoTramo: 'SIN_SALIDA'
+        });
+      }
+
+      if (prevOut) {
+        const breakMs = new Date(c.fechaHora).getTime() - new Date(prevOut.fechaHora).getTime();
+        if (breakMs > 0) {
+          totalDescansoMs += breakMs;
+          if (tramos.length > 0) {
+            tramos[tramos.length - 1].descansoPosteriorMin = Math.round(breakMs / 60000);
+            tramos[tramos.length - 1].descansoPosteriorHs = (breakMs / (1000 * 3600)).toFixed(2);
+          }
+        }
+        prevOut = null;
+      }
+      currentIn = c;
+    } else if (c.tipoRegistro === 'OUT') {
+      if (currentIn) {
+        const diffMs = new Date(c.fechaHora).getTime() - new Date(currentIn.fechaHora).getTime();
+        const durMin = Math.max(0, Math.round(diffMs / 60000));
+        const durHs = diffMs / (1000 * 3600);
+        totalTrabajadoMs += diffMs;
+
+        tramos.push({
+          numero: tramos.length + 1,
+          entrada: currentIn.hora,
+          salida: c.hora,
+          entradaFechaHora: currentIn.fechaHora,
+          salidaFechaHora: c.fechaHora,
+          molineteEntrada: currentIn.molineteNombre,
+          molineteSalida: c.molineteNombre,
+          duracionMin: durMin,
+          duracionHs: Number(durHs.toFixed(2)),
+          descansoPosteriorMin: 0,
+          descansoPosteriorHs: '0.00',
+          estadoTramo: 'COMPLETO'
+        });
+        prevOut = c;
+        currentIn = null;
+      } else {
+        // OUT sin IN previo registrado
+        tramos.push({
+          numero: tramos.length + 1,
+          entrada: '--:--:--',
+          salida: c.hora,
+          entradaFechaHora: null,
+          salidaFechaHora: c.fechaHora,
+          molineteEntrada: null,
+          molineteSalida: c.molineteNombre,
+          duracionMin: 0,
+          duracionHs: 0,
+          descansoPosteriorMin: 0,
+          descansoPosteriorHs: '0.00',
+          estadoTramo: 'SIN_ENTRADA'
+        });
+        prevOut = c;
+      }
+    }
+  }
+
+  if (currentIn) {
+    tramos.push({
+      numero: tramos.length + 1,
+      entrada: currentIn.hora,
+      salida: '--:--:--',
+      entradaFechaHora: currentIn.fechaHora,
+      salidaFechaHora: null,
+      molineteEntrada: currentIn.molineteNombre,
+      molineteSalida: null,
+      duracionMin: 0,
+      duracionHs: 0,
+      descansoPosteriorMin: 0,
+      descansoPosteriorHs: '0.00',
+      estadoTramo: 'SIN_SALIDA'
+    });
+  }
+
+  // Fallback de contingencia: si no se emparejó ningún tramo completo pero hay 2 o más fichadas separadas
+  if (tramos.filter(t => t.estadoTramo === 'COMPLETO').length === 0 && clean.length >= 2) {
+    const p1 = clean[0];
+    const p2 = clean[clean.length - 1];
+    const diffMs = new Date(p2.fechaHora).getTime() - new Date(p1.fechaHora).getTime();
+    if (diffMs > 5 * 60 * 1000) {
+      const durMin = Math.round(diffMs / 60000);
+      const durHs = diffMs / (1000 * 3600);
+      totalTrabajadoMs = diffMs;
+      tramos.length = 0;
+      tramos.push({
+        numero: 1,
+        entrada: p1.hora,
+        salida: p2.hora,
+        entradaFechaHora: p1.fechaHora,
+        salidaFechaHora: p2.fechaHora,
+        molineteEntrada: p1.molineteNombre,
+        molineteSalida: p2.molineteNombre,
+        duracionMin: durMin,
+        duracionHs: Number(durHs.toFixed(2)),
+        descansoPosteriorMin: 0,
+        descansoPosteriorHs: '0.00',
+        estadoTramo: 'COMPLETO'
+      });
+    }
+  }
+
+  // Determinar primer ingreso real y última salida real
+  const primerIngresoItem = clean.find(c => c.tipoRegistro === 'IN') || clean[0] || null;
+  const ultimaSalidaItem = [...clean].reverse().find(c => c.tipoRegistro === 'OUT') || (clean.length > 1 ? clean[clean.length - 1] : null);
+
+  const primerIngreso = primerIngresoItem ? primerIngresoItem.hora : '--:--:--';
+  const ultimaSalida = ultimaSalidaItem && ultimaSalidaItem.fechaHora !== (primerIngresoItem && primerIngresoItem.fechaHora) 
+    ? ultimaSalidaItem.hora 
+    : '--:--:--';
+
+  // Clasificación de Turno: NOCTURNO, CORTADO, CORRIDO
+  let tipo = 'CORRIDO';
+  let horarioAsignadoStr = `${horarioEntrada} - ${horarioSalida}`;
+  let targetEntryMin = parseTimeToMinutes(horarioEntrada);
+  let targetExitMin = parseTimeToMinutes(horarioSalida);
+  let toleranceMin = defaultTolerance;
+
+  const nightTT = assignedTimetables.find(t => t.isNightShift);
+  const primerHoraMin = primerIngresoItem ? parseTimeToMinutes(primerIngresoItem.hora) : 0;
+  const isDynamicNight = !assignedTimetables.length && primerIngresoItem && (primerHoraMin >= 19 * 60 || primerHoraMin < 6 * 60);
+
+  if (nightTT || isDynamicNight) {
+    tipo = 'NOCTURNO';
+    const tt = nightTT || {
+      name: 'Noche',
+      intime: '21:00',
+      outtime: '05:00',
+      intimeMin: 1260,
+      outtimeMin: 300,
+      latetime: defaultTolerance
+    };
+    horarioAsignadoStr = `${tt.intime} - ${tt.outtime} (+1d) [${tt.name}]`;
+    targetEntryMin = tt.intimeMin;
+    toleranceMin = tt.latetime || defaultTolerance;
+  } else if (assignedTimetables.length >= 2 || trramosCompletosCount(tramos) >= 2 || totalDescansoMs >= 20 * 60 * 1000) {
+    tipo = 'CORTADO';
+    if (assignedTimetables.length >= 2) {
+      const t1 = assignedTimetables[0];
+      const t2 = assignedTimetables[1];
+      horarioAsignadoStr = `${t1.intime}-${t1.outtime} / ${t2.intime}-${t2.outtime} [${t1.name} / ${t2.name}]`;
+      targetEntryMin = t1.intimeMin;
+      toleranceMin = t1.latetime || defaultTolerance;
+    } else {
+      horarioAsignadoStr = 'Cortado (07:00-12:00 / 14:00-18:00)';
+      targetEntryMin = 7 * 60;
+    }
+  } else if (assignedTimetables.length === 1) {
+    const tt = assignedTimetables[0];
+    tipo = 'CORRIDO';
+    horarioAsignadoStr = `${tt.intime} - ${tt.outtime} [${tt.name}]`;
+    targetEntryMin = tt.intimeMin;
+    targetExitMin = tt.outtimeMin;
+    toleranceMin = tt.latetime || defaultTolerance;
+  }
+
+  // Cálculo de tardanza
+  let minutosTardanza = 0;
+  let estadoAcceso = 'PUNCTUAL';
+
+  if (primerIngresoItem) {
+    const entMin = parseTimeToMinutes(primerIngresoItem.hora);
+    if (tipo === 'NOCTURNO') {
+      if (entMin > targetEntryMin + toleranceMin && entMin >= 18 * 60) {
+        minutosTardanza = entMin - targetEntryMin;
+      }
+    } else {
+      if (entMin > targetEntryMin + toleranceMin) {
+        minutosTardanza = entMin - targetEntryMin;
+      }
+    }
+  }
+
+  if (minutosTardanza > 0) {
+    estadoAcceso = 'LATE';
+  }
+
+  const tramosCompletos = tramos.filter(t => t.estadoTramo === 'COMPLETO');
+  const tieneIncompleto = tramos.some(t => t.estadoTramo === 'SIN_SALIDA' || t.estadoTramo === 'SIN_ENTRADA') || (clean.length === 1);
+  if (tieneIncompleto && tramosCompletos.length === 0) {
+    estadoAcceso = 'INCOMPLETE';
+  }
+
+  const leave = getUserLeaveOnDate(userid, workDate);
+  if (leave && (estadoAcceso === 'INCOMPLETE' || minutosTardanza === 0)) {
+    estadoAcceso = 'EXCEPCION';
+  }
+
+  const horasTrabajadasNum = Number((totalTrabajadoMs / (1000 * 3600)).toFixed(2));
+  const horasDescansoNum = Number((totalDescansoMs / (1000 * 3600)).toFixed(2));
+
+  return {
+    userid,
+    legajo: user.legajo,
+    empleado: user.nombre,
+    deptId: user.deptId,
+    departamento: user.departamento,
+    fecha: workDate,
+    tipoHorario: tipo,
+    horarioAsignado: horarioAsignadoStr,
+    entradaReal: primerIngreso,
+    salidaReal: ultimaSalida,
+    totalFichadas: clean.length,
+    minutosTardanza,
+    horasTrabajadasNum,
+    horasDescansoNum,
+    horasTrabajadas: horasTrabajadasNum > 0 ? `${horasTrabajadasNum.toFixed(2)} hs` : (leave ? `Excepción (${leave.className})` : 'Sin Salida'),
+    horasDescanso: `${horasDescansoNum.toFixed(2)} hs`,
+    duracionHoras: horasTrabajadasNum > 0 ? `${horasTrabajadasNum.toFixed(2)} hs` : (leave ? `Excepción (${leave.className})` : 'Sin Salida'),
+    cantidadTramos: tramos.length,
+    detalleTramos: tramos,
+    estado: estadoAcceso,
+    excepcion: leave ? {
+      classId: leave.classId,
+      className: leave.className,
+      showAs: leave.showAs,
+      whys: leave.whys
+    } : null,
+    molineteEntrada: primerIngresoItem ? primerIngresoItem.molineteNombre : null,
+    molineteSalida: ultimaSalidaItem ? ultimaSalidaItem.molineteNombre : null,
+    fichadasRaw: clean.map(c => ({
+      hora: c.hora,
+      tipoRegistro: c.tipoRegistro,
+      tipoRegistroTexto: c.tipoRegistroTexto,
+      molineteId: c.molineteId,
+      molineteNombre: c.molineteNombre
+    }))
+  };
+};
+
+const trramosCompletosCount = (tramos) => {
+  return tramos.filter(t => t.estadoTramo === 'COMPLETO').length;
+};
+
+// Main Attendance Calculation Engine (agrupado por jornada operativa 06:00 a 06:00)
 export const getAsistenciaReport = ({
   legajo,
   empleado,
@@ -737,7 +1061,6 @@ export const getAsistenciaReport = ({
   const filterDept = deptId !== undefined && deptId !== '' ? Number(deptId) : null;
   const defaultTolerance = parseInt(toleranciaMin, 10) || 15;
 
-  // Fast filter checkins using date/user indices
   let targetUserid = null;
   if (searchLegajo) {
     for (const [uid, u] of usersMap.entries()) {
@@ -748,7 +1071,8 @@ export const getAsistenciaReport = ({
     }
   }
 
-  const baseCheckins = getCheckinsForFilter({ fechaDesde, fechaHasta, userid: targetUserid });
+  // Filtrado de base usando índices de fecha operativa (corte de 6am a 6am)
+  const baseCheckins = getCheckinsForFilter({ fechaDesde, fechaHasta, userid: targetUserid, useOperationalDate: true });
   let filteredCheckins = baseCheckins;
   if (searchLegajo || searchEmpleado || filterDept !== null || (baseCheckins === checkinList && (fechaDesde || fechaHasta))) {
     filteredCheckins = baseCheckins.filter(item => {
@@ -756,21 +1080,22 @@ export const getAsistenciaReport = ({
       if (searchEmpleado && !item.empleado.toLowerCase().includes(searchEmpleado)) return false;
       if (filterDept !== null && item.deptId !== filterDept) return false;
       if (baseCheckins === checkinList) {
-        if (fechaDesde && item.fecha < fechaDesde) return false;
-        if (fechaHasta && item.fecha > fechaHasta) return false;
+        if (fechaDesde && item.fechaOperativa < fechaDesde) return false;
+        if (fechaHasta && item.fechaOperativa > fechaHasta) return false;
       }
       return true;
     });
   }
 
-  // Group checkins by user
-  const userCheckinsMap = new Map();
+  // Agrupar fichadas por (userid, fechaOperativa)
+  const userOpDateMap = new Map();
   for (let i = 0; i < filteredCheckins.length; i++) {
     const c = filteredCheckins[i];
-    if (!userCheckinsMap.has(c.userid)) {
-      userCheckinsMap.set(c.userid, []);
+    const key = `${c.userid}_${c.fechaOperativa}`;
+    if (!userOpDateMap.has(key)) {
+      userOpDateMap.set(key, { userid: c.userid, opDate: c.fechaOperativa, checkins: [] });
     }
-    userCheckinsMap.get(c.userid).push(c);
+    userOpDateMap.get(key).checkins.push(c);
   }
 
   const summary = [];
@@ -778,9 +1103,14 @@ export const getAsistenciaReport = ({
   let totalTardanzas = 0;
   let totalIncompletos = 0;
   let totalMinutosTardanza = 0;
+  let totalHorasNetasGlobal = 0;
+  let totalHorasDescansoGlobal = 0;
 
-  // Process each user's checkins
-  userCheckinsMap.forEach((userCheckins, userid) => {
+  // Procesar cada par de (usuario, jornada operativa)
+  userOpDateMap.forEach(({ userid, opDate, checkins }) => {
+    if (fechaDesde && opDate < fechaDesde) return;
+    if (fechaHasta && opDate > fechaHasta) return;
+
     const user = usersMap.get(userid) || {
       legajo: 'Desconocido',
       nombre: `Usuario #${userid}`,
@@ -788,186 +1118,38 @@ export const getAsistenciaReport = ({
       deptId: 0
     };
 
-    // Sort checkins ascending
-    userCheckins.sort((a, b) => a.fechaHora.localeCompare(b.fechaHora));
-
-    // Group checkins by calendar date initially
-    const dateCheckinsMap = new Map();
-    userCheckins.forEach(c => {
-      if (!dateCheckinsMap.has(c.fecha)) {
-        dateCheckinsMap.set(c.fecha, []);
-      }
-      dateCheckinsMap.get(c.fecha).push(c);
+    const assignedTimetables = getAssignedTimetables(userid, opDate);
+    const dayAttendance = calculateUserDayAttendance({
+      userid,
+      user,
+      workDate: opDate,
+      checkins,
+      assignedTimetables,
+      defaultTolerance,
+      horarioEntrada,
+      horarioSalida
     });
 
-    const dates = Array.from(dateCheckinsMap.keys()).sort();
+    // Filtros adicionales por tipoHorario y estado
+    if (tipoHorario && tipoHorario !== 'TODOS' && dayAttendance.tipoHorario !== tipoHorario) {
+      return;
+    }
+    if (estado && estado !== '' && dayAttendance.estado !== estado) {
+      return;
+    }
 
-    // Process each work date
-    dates.forEach(workDate => {
-      if (fechaDesde && workDate < fechaDesde) return;
-      if (fechaHasta && workDate > fechaHasta) return;
+    if (dayAttendance.estado === 'PUNCTUAL') totalPuntual++;
+    else if (dayAttendance.estado === 'LATE') totalTardanzas++;
+    else if (dayAttendance.estado === 'INCOMPLETE') totalIncompletos++;
 
-      const dayCheckins = dateCheckinsMap.get(workDate) || [];
-      const assignedTimetables = getAssignedTimetables(userid, workDate);
+    totalMinutosTardanza += dayAttendance.minutosTardanza;
+    totalHorasNetasGlobal += dayAttendance.horasTrabajadasNum;
+    totalHorasDescansoGlobal += dayAttendance.horasDescansoNum;
 
-      let tipo = 'CORRIDO';
-      let horarioAsignadoStr = `${horarioEntrada} - ${horarioSalida}`;
-      let targetEntryMin = parseTimeToMinutes(horarioEntrada);
-      let targetExitMin = parseTimeToMinutes(horarioSalida);
-      let toleranceMin = defaultTolerance;
-
-      let primera = dayCheckins[0];
-      let ultima = dayCheckins.length > 1 ? dayCheckins[dayCheckins.length - 1] : null;
-      let duracionHoras = null;
-      let minutosTardanza = 0;
-      let estadoAcceso = 'PUNCTUAL';
-
-      // -------------------------------------------------------------
-      // 1. NIGHT SHIFT (Turno Nocturno) - Overlap onto next morning
-      // -------------------------------------------------------------
-      const nightTT = assignedTimetables.find(t => t.isNightShift);
-      const isDynamicNight = !assignedTimetables.length && primera && parseTimeToMinutes(primera.hora) >= 1900 / 100; // >= 19:00
-
-      if (nightTT || isDynamicNight) {
-        tipo = 'NOCTURNO';
-        const tt = nightTT || {
-          name: 'Noche',
-          intime: '21:00',
-          outtime: '05:00',
-          intimeMin: 1260,
-          outtimeMin: 300,
-          latetime: defaultTolerance
-        };
-
-        horarioAsignadoStr = `${tt.intime} - ${tt.outtime} (+1d) [${tt.name}]`;
-        targetEntryMin = tt.intimeMin;
-        toleranceMin = tt.latetime || defaultTolerance;
-
-        // Entry is late night on workDate
-        const entryCheckin = dayCheckins.find(c => parseTimeToMinutes(c.hora) >= (targetEntryMin - 180));
-        if (entryCheckin) primera = entryCheckin;
-
-        // Exit is next morning (workDate + 1)
-        const nextDateObj = new Date(workDate);
-        nextDateObj.setDate(nextDateObj.getDate() + 1);
-        const nextDateStr = nextDateObj.toISOString().substring(0, 10);
-        const nextDayCheckins = dateCheckinsMap.get(nextDateStr) || [];
-        
-        // Find exit in early morning next day (e.g. before 11:00 AM)
-        const exitCheckin = nextDayCheckins.find(c => parseTimeToMinutes(c.hora) <= 660); // <= 11:00
-        if (exitCheckin) {
-          ultima = exitCheckin;
-        }
-      }
-      // -------------------------------------------------------------
-      // 2. SPLIT SHIFT (Horario Cortado) - 2 shifts or 4 checkins
-      // -------------------------------------------------------------
-      else if (assignedTimetables.length >= 2 || (assignedTimetables.length === 0 && dayCheckins.length >= 4)) {
-        tipo = 'CORTADO';
-        if (assignedTimetables.length >= 2) {
-          const t1 = assignedTimetables[0];
-          const t2 = assignedTimetables[1];
-          horarioAsignadoStr = `${t1.intime}-${t1.outtime} / ${t2.intime}-${t2.outtime} [${t1.name} / ${t2.name}]`;
-          targetEntryMin = t1.intimeMin;
-          toleranceMin = t1.latetime || defaultTolerance;
-        } else {
-          horarioAsignadoStr = `Cortado (08:00-12:00 / 14:00-18:00)`;
-        }
-
-        // Pair segment 1 and segment 2 if 4 clockings exist
-        if (dayCheckins.length >= 4) {
-          const c1 = dayCheckins[0];
-          const c2 = dayCheckins[1];
-          const c3 = dayCheckins[2];
-          const c4 = dayCheckins[dayCheckins.length - 1];
-
-          const diff1Ms = new Date(c2.fechaHora).getTime() - new Date(c1.fechaHora).getTime();
-          const diff2Ms = new Date(c4.fechaHora).getTime() - new Date(c3.fechaHora).getTime();
-          const totalHrs = (diff1Ms + diff2Ms) / (1000 * 3600);
-          duracionHoras = totalHrs.toFixed(2);
-          primera = c1;
-          ultima = c4;
-        }
-      }
-      // -------------------------------------------------------------
-      // 3. CONTINUOUS SHIFT (Horario Corrido)
-      // -------------------------------------------------------------
-      else if (assignedTimetables.length === 1) {
-        const tt = assignedTimetables[0];
-        tipo = 'CORRIDO';
-        horarioAsignadoStr = `${tt.intime} - ${tt.outtime} [${tt.name}]`;
-        targetEntryMin = tt.intimeMin;
-        targetExitMin = tt.outtimeMin;
-        toleranceMin = tt.latetime || defaultTolerance;
-      }
-
-      // Filter by tipoHorario if requested
-      if (tipoHorario && tipoHorario !== 'TODOS' && tipo !== tipoHorario) {
-        return;
-      }
-
-      // Compute tardiness
-      const entMin = parseTimeToMinutes(primera ? primera.hora : '00:00');
-      if (entMin > (targetEntryMin + toleranceMin)) {
-        minutosTardanza = entMin - targetEntryMin;
-        estadoAcceso = 'LATE';
-        totalTardanzas++;
-        totalMinutosTardanza += minutosTardanza;
-      } else {
-        totalPuntual++;
-      }
-
-      // Check incomplete
-      if (!ultima || (ultima.fechaHora === primera.fechaHora)) {
-        if (estadoAcceso !== 'LATE') estadoAcceso = 'INCOMPLETE';
-        totalIncompletos++;
-      }
-
-      // Check if employee has a registered exception/leave on this date
-      const leave = getUserLeaveOnDate(userid, workDate);
-      if (leave && (estadoAcceso === 'INCOMPLETE' || minutosTardanza === 0)) {
-        estadoAcceso = 'EXCEPCION';
-      }
-
-      // Filter by status if requested
-      if (estado && estado !== '' && estadoAcceso !== estado) {
-        return;
-      }
-
-      // Duration calculation if not already computed for split shift
-      if (!duracionHoras && primera && ultima && ultima.fechaHora !== primera.fechaHora) {
-        const diffMs = new Date(ultima.fechaHora).getTime() - new Date(primera.fechaHora).getTime();
-        duracionHoras = (diffMs / (1000 * 3600)).toFixed(2);
-      }
-
-      summary.push({
-        userid,
-        legajo: user.legajo,
-        empleado: user.nombre,
-        deptId: user.deptId,
-        departamento: user.departamento,
-        fecha: workDate,
-        tipoHorario: tipo,
-        horarioAsignado: horarioAsignadoStr,
-        entradaReal: primera ? primera.hora : '--:--:--',
-        salidaReal: ultima ? ultima.hora : '--:--:--',
-        totalFichadas: dayCheckins.length,
-        minutosTardanza,
-        duracionHoras: duracionHoras ? `${duracionHoras} hs` : (leave ? `Excepción (${leave.className})` : 'Sin Salida'),
-        estado: estadoAcceso,
-        excepcion: leave ? {
-          classId: leave.classId,
-          className: leave.className,
-          showAs: leave.showAs,
-          whys: leave.whys
-        } : null,
-        molineteEntrada: primera ? primera.molineteId : null,
-        molineteSalida: ultima ? ultima.molineteId : null
-      });
-    });
+    summary.push(dayAttendance);
   });
 
-  // Sort by fecha according to ordenFecha ('ASC' default or 'DESC')
+  // Ordenar según ordenFecha ('ASC' o 'DESC')
   if (ordenFecha && ordenFecha.toUpperCase() === 'DESC') {
     summary.sort((a, b) => b.fecha.localeCompare(a.fecha) || a.legajo.localeCompare(b.legajo));
   } else {
@@ -991,7 +1173,9 @@ export const getAsistenciaReport = ({
       totalPuntual,
       totalTardanzas,
       totalIncompletos,
-      promedioTardanzaMin: totalTardanzas > 0 ? (totalMinutosTardanza / totalTardanzas).toFixed(1) : 0
+      totalHorasNetas: Number(totalHorasNetasGlobal.toFixed(1)),
+      totalHorasDescanso: Number(totalHorasDescansoGlobal.toFixed(1)),
+      promedioTardanzaMin: totalTardanzas > 0 ? Number((totalMinutosTardanza / totalTardanzas).toFixed(1)) : 0
     },
     data
   };
@@ -1009,16 +1193,25 @@ export const classifyDepartment = (name, supDeptId = 0) => {
 };
 
 export const getCensoAsistencia = ({ fecha }) => {
-  const targetDate = fecha || new Date().toISOString().substring(0, 10);
+  const currentDtStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
+  const targetDate = fecha || getOperationalDate(currentDtStr);
   
-  const dayCheckins = checkinsByDate.get(targetDate) || [];
-  const presentUserIds = new Set(dayCheckins.map(item => item.userid));
+  // Utilizar índice de fecha operativa (jornadas de 06:00 AM a 06:00 AM)
+  const dayCheckins = checkinsByOperationalDate.get(targetDate) || [];
+  
+  // Agrupar fichadas del día operativo por usuario
+  const userCheckinsMap = new Map();
+  for (let i = 0; i < dayCheckins.length; i++) {
+    const c = dayCheckins[i];
+    if (!userCheckinsMap.has(c.userid)) userCheckinsMap.set(c.userid, []);
+    userCheckinsMap.get(c.userid).push(c);
+  }
 
   const resumen = {
-    Permanente: { total: 0, ingresaron: 0, faltan: 0, porcentaje: 0 },
-    Eventual: { total: 0, ingresaron: 0, faltan: 0, porcentaje: 0 },
-    Transitorio: { total: 0, ingresaron: 0, faltan: 0, porcentaje: 0 },
-    General: { total: 0, ingresaron: 0, faltan: 0, porcentaje: 0 }
+    Permanente: { total: 0, ingresaron: 0, adentro: 0, descansoSalieron: 0, faltan: 0, porcentaje: 0, porcentajeAdentro: 0 },
+    Eventual: { total: 0, ingresaron: 0, adentro: 0, descansoSalieron: 0, faltan: 0, porcentaje: 0, porcentajeAdentro: 0 },
+    Transitorio: { total: 0, ingresaron: 0, adentro: 0, descansoSalieron: 0, faltan: 0, porcentaje: 0, porcentajeAdentro: 0 },
+    General: { total: 0, ingresaron: 0, adentro: 0, descansoSalieron: 0, faltan: 0, porcentaje: 0, porcentajeAdentro: 0 }
   };
 
   const deptoStatsMap = new Map();
@@ -1030,20 +1223,53 @@ export const getCensoAsistencia = ({ fecha }) => {
       categoria: deptObj.categoria || classifyDepartment(deptObj.deptName, deptObj.supDeptId),
       total: 0,
       ingresaron: 0,
+      adentro: 0,
+      descansoSalieron: 0,
       faltan: 0,
       porcentaje: 0
     });
   });
 
+  const personalActivo = [];
+
   usersMap.forEach(u => {
     const cat = classifyDepartment(u.departamento);
-    const isPresent = presentUserIds.has(u.userid);
+    const uCheckins = (userCheckinsMap.get(u.userid) || []).sort((a, b) => a.fechaHora.localeCompare(b.fechaHora));
+    const isPresent = uCheckins.length > 0;
+    const lastCheckin = isPresent ? uCheckins[uCheckins.length - 1] : null;
+    const isAdentro = isPresent && lastCheckin.tipoRegistro === 'IN';
+    const isSalio = isPresent && lastCheckin.tipoRegistro === 'OUT';
 
     resumen[cat].total++;
     resumen.General.total++;
+
     if (isPresent) {
       resumen[cat].ingresaron++;
       resumen.General.ingresaron++;
+      if (isAdentro) {
+        resumen[cat].adentro++;
+        resumen.General.adentro++;
+      } else {
+        resumen[cat].descansoSalieron++;
+        resumen.General.descansoSalieron++;
+      }
+
+      personalActivo.push({
+        userid: u.userid,
+        legajo: u.legajo,
+        nombre: u.nombre,
+        departamento: u.departamento,
+        categoria: cat,
+        estado: isAdentro ? 'ADENTRO' : 'SALIÓ / DESCANSO',
+        primerIngreso: uCheckins[0].hora,
+        ultimoRegistro: {
+          hora: lastCheckin.hora,
+          tipo: lastCheckin.tipoRegistro,
+          tipoTexto: lastCheckin.tipoRegistroTexto,
+          molinete: lastCheckin.molineteNombre
+        },
+        totalMarcaciones: uCheckins.length
+      });
     } else {
       resumen[cat].faltan++;
       resumen.General.faltan++;
@@ -1052,14 +1278,22 @@ export const getCensoAsistencia = ({ fecha }) => {
     const dStat = deptoStatsMap.get(u.deptId);
     if (dStat) {
       dStat.total++;
-      if (isPresent) dStat.ingresaron++;
-      else dStat.faltan++;
+      if (isPresent) {
+        dStat.ingresaron++;
+        if (isAdentro) dStat.adentro++;
+        else dStat.descansoSalieron++;
+      } else {
+        dStat.faltan++;
+      }
     }
   });
 
   Object.keys(resumen).forEach(k => {
     resumen[k].porcentaje = resumen[k].total > 0 
       ? Number(((resumen[k].ingresaron / resumen[k].total) * 100).toFixed(1)) 
+      : 0;
+    resumen[k].porcentajeAdentro = resumen[k].total > 0
+      ? Number(((resumen[k].adentro / resumen[k].total) * 100).toFixed(1))
       : 0;
   });
 
@@ -1082,8 +1316,10 @@ export const getCensoAsistencia = ({ fecha }) => {
 
   return {
     fecha: targetDate,
+    jornadaOperativa: `${targetDate} 06:00 a ${targetDate} (+1d 06:00)`,
     resumen,
-    censoDepartamentos
+    censoDepartamentos,
+    personalActivo
   };
 };
 
@@ -1145,6 +1381,7 @@ export const getEstadisticasReport = ({
         llegadasTardeMin: 0,
         salidasTempranoMin: 0,
         totalTrabajadoHs: 0,
+        totalDescansoHs: 0,
         sinEntradaVeces: 0,
         sinSalidaVeces: 0,
         tiposHorarioSet: new Set()
@@ -1154,7 +1391,10 @@ export const getEstadisticasReport = ({
     const uStat = userStatsMap.get(item.userid);
     uStat.trabajadosDias++;
     uStat.llegadasTardeMin += item.minutosTardanza;
-    if (item.duracionHoras && item.duracionHoras.includes('hs')) {
+    if (item.horasTrabajadasNum !== undefined) {
+      uStat.totalTrabajadoHs += item.horasTrabajadasNum;
+      uStat.totalDescansoHs += (item.horasDescansoNum || 0);
+    } else if (item.duracionHoras && item.duracionHoras.includes('hs')) {
       uStat.totalTrabajadoHs += parseFloat(item.duracionHoras) || 0;
     }
     if (item.estado === 'INCOMPLETE') {
@@ -1175,6 +1415,7 @@ export const getEstadisticasReport = ({
       llegadasTardeMin: 0,
       salidasTempranoMin: 0,
       totalTrabajadoHs: 0,
+      totalDescansoHs: 0,
       sinEntradaVeces: 0,
       sinSalidaVeces: 0,
       tiposHorarioSet: new Set()
@@ -1244,6 +1485,7 @@ export const getEstadisticasReport = ({
       sinEntradaVeces: uStat.sinEntradaVeces,
       sinSalidaVeces: uStat.sinSalidaVeces,
       tiempoTrabajadoHs: Number(uStat.totalTrabajadoHs.toFixed(2)),
+      tiempoDescansoHs: Number(uStat.totalDescansoHs.toFixed(2)),
       tiempoCumplidoHs: Number(uStat.totalTrabajadoHs.toFixed(2)),
       presentismoPct,
       enfermedad: classCounts[1] || 0,
@@ -1271,6 +1513,7 @@ export const getEstadisticasReport = ({
   let totalAusenteDiasGlobal = 0;
   let totalLlegadasTardeMinGlobal = 0;
   let totalTiempoTrabajadoHsGlobal = 0;
+  let totalTiempoDescansoHsGlobal = 0;
   let sumPresentismo = 0;
 
   statsList.forEach(s => {
@@ -1278,6 +1521,7 @@ export const getEstadisticasReport = ({
     totalAusenteDiasGlobal += s.ausenteDias;
     totalLlegadasTardeMinGlobal += s.llegadasTardeMin;
     totalTiempoTrabajadoHsGlobal += s.tiempoTrabajadoHs;
+    totalTiempoDescansoHsGlobal += (s.tiempoDescansoHs || 0);
     sumPresentismo += s.presentismoPct;
   });
 
@@ -1294,6 +1538,7 @@ export const getEstadisticasReport = ({
       promedioPresentismoPct: total > 0 ? Number((sumPresentismo / total).toFixed(1)) : 0,
       totalLlegadasTardeMin: totalLlegadasTardeMinGlobal,
       totalHorasTrabajadas: Number(totalTiempoTrabajadoHsGlobal.toFixed(1)),
+      totalHorasDescanso: Number(totalTiempoDescansoHsGlobal.toFixed(1)),
       totalDiasTrabajados: totalTrabajadosDiasGlobal,
       totalAusencias: totalAusenteDiasGlobal
     },
@@ -1368,32 +1613,21 @@ export const getEmpleadosTurnos = ({
   const startTime = Date.now();
   const pageNum = Math.max(1, parseInt(page, 10));
   const pageSize = Math.min(200, Math.max(1, parseInt(limit, 10)));
-  const targetDate = fecha || new Date().toISOString().substring(0, 10);
+  const currentDtStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
+  const targetDate = fecha || getOperationalDate(currentDtStr);
 
   const searchLegajo = legajo ? legajo.toString().toLowerCase().trim() : null;
   const searchEmpleado = empleado ? empleado.toString().toLowerCase().trim() : null;
   const filterDept = deptId !== undefined && deptId !== '' ? Number(deptId) : null;
 
-  const nextDateObj = new Date(targetDate);
-  nextDateObj.setDate(nextDateObj.getDate() + 1);
-  const nextDateStr = nextDateObj.toISOString().substring(0, 10);
-
-  const targetCheckinsList = checkinsByDate.get(targetDate) || [];
-  const nextCheckinsList = checkinsByDate.get(nextDateStr) || [];
-
+  // Obtener todas las fichadas de la jornada operativa correspondiente (06:00 a 06:00)
+  const targetCheckinsList = checkinsByOperationalDate.get(targetDate) || [];
   const checkinsTargetMap = new Map();
-  const checkinsNextMap = new Map();
 
   for (let i = 0; i < targetCheckinsList.length; i++) {
     const c = targetCheckinsList[i];
     if (!checkinsTargetMap.has(c.userid)) checkinsTargetMap.set(c.userid, []);
     checkinsTargetMap.get(c.userid).push(c);
-  }
-
-  for (let i = 0; i < nextCheckinsList.length; i++) {
-    const c = nextCheckinsList[i];
-    if (!checkinsNextMap.has(c.userid)) checkinsNextMap.set(c.userid, []);
-    checkinsNextMap.get(c.userid).push(c);
   }
 
   const resultList = [];
@@ -1409,125 +1643,94 @@ export const getEmpleadosTurnos = ({
     if (filterDept !== null && u.deptId !== filterDept) return;
 
     const assignedTTs = getAssignedTimetables(u.userid, targetDate);
-    const dayCheckins = (checkinsTargetMap.get(u.userid) || []).sort((a, b) => a.fechaHora.localeCompare(b.fechaHora));
-    const nextCheckins = (checkinsNextMap.get(u.userid) || []).sort((a, b) => a.fechaHora.localeCompare(b.fechaHora));
+    const userCheckins = checkinsTargetMap.get(u.userid) || [];
 
-    let tipo = 'CORRIDO';
     let horarioTeoricoStr = '08:00 - 17:00';
     let horasTeoricas = 9.0;
-    let primera = dayCheckins[0] || null;
-    let ultima = dayCheckins.length > 1 ? dayCheckins[dayCheckins.length - 1] : null;
-    let tramos = [];
-    let duracionRealHs = null;
-    let estado = 'PUNCTUAL';
-
-    const nightTT = assignedTTs.find(t => t.isNightShift);
-    const isDynamicNight = !assignedTTs.length && primera && parseTimeToMinutes(primera.hora) >= 19 * 60;
-
-    if (nightTT || isDynamicNight) {
-      tipo = 'NOCTURNO';
-      const tt = nightTT || { name: 'Noche', intime: '21:00', outtime: '05:00', longtime: 480 };
-      horarioTeoricoStr = `${tt.intime} - ${tt.outtime} (+1d)`;
+    if (assignedTTs.length === 1) {
+      const tt = assignedTTs[0];
+      horarioTeoricoStr = `${tt.intime} - ${tt.outtime}${tt.isNightShift ? ' (+1d)' : ''}`;
       horasTeoricas = tt.longtime ? Number((tt.longtime / 60).toFixed(1)) : 8.0;
-
-      const exitCheckin = nextCheckins.find(c => parseTimeToMinutes(c.hora) <= 11 * 60);
-      if (exitCheckin) {
-        ultima = exitCheckin;
-      }
-      if (primera && ultima) {
-        const diffMs = new Date(ultima.fechaHora).getTime() - new Date(primera.fechaHora).getTime();
-        duracionRealHs = (diffMs / (1000 * 3600)).toFixed(2);
-        tramos.push({
-          tramo: 'Turno Noche',
-          entrada: primera.hora,
-          salida: `${ultima.hora} (+1d)`,
-          duracion: `${duracionRealHs} hs`
-        });
-      }
-      countNocturno++;
-    } else if (assignedTTs.length >= 2 || (assignedTTs.length === 0 && dayCheckins.length >= 4)) {
-      tipo = 'CORTADO';
-      if (assignedTTs.length >= 2) {
-        const t1 = assignedTTs[0];
-        const t2 = assignedTTs[1];
-        horarioTeoricoStr = `${t1.intime}-${t1.outtime} / ${t2.intime}-${t2.outtime}`;
-        horasTeoricas = Number(((t1.longtime + t2.longtime) / 60).toFixed(1));
-      } else {
-        horarioTeoricoStr = '07:00-12:00 / 14:00-18:00';
-        horasTeoricas = 9.0;
-      }
-
-      if (dayCheckins.length >= 4) {
-        const c1 = dayCheckins[0];
-        const c2 = dayCheckins[1];
-        const c3 = dayCheckins[2];
-        const c4 = dayCheckins[dayCheckins.length - 1];
-
-        const diff1Ms = new Date(c2.fechaHora).getTime() - new Date(c1.fechaHora).getTime();
-        const diff2Ms = new Date(c4.fechaHora).getTime() - new Date(c3.fechaHora).getTime();
-        const dur1 = (diff1Ms / (1000 * 3600)).toFixed(2);
-        const dur2 = (diff2Ms / (1000 * 3600)).toFixed(2);
-        duracionRealHs = (parseFloat(dur1) + parseFloat(dur2)).toFixed(2);
-        primera = c1;
-        ultima = c4;
-
-        tramos.push(
-          { tramo: 'Mañana (Tramo 1)', entrada: c1.hora, salida: c2.hora, duracion: `${dur1} hs` },
-          { tramo: 'Tarde (Tramo 2)', entrada: c3.hora, salida: c4.hora, duracion: `${dur2} hs` }
-        );
-      } else if (dayCheckins.length >= 2) {
-        primera = dayCheckins[0];
-        ultima = dayCheckins[dayCheckins.length - 1];
-        const diffMs = new Date(ultima.fechaHora).getTime() - new Date(primera.fechaHora).getTime();
-        duracionRealHs = (diffMs / (1000 * 3600)).toFixed(2);
-        tramos.push({
-          tramo: 'Registro Parcial Cortado',
-          entrada: primera.hora,
-          salida: ultima.hora,
-          duracion: `${duracionRealHs} hs`
-        });
-      }
-      countCortado++;
-    } else {
-      tipo = 'CORRIDO';
-      if (assignedTTs.length === 1) {
-        const tt = assignedTTs[0];
-        horarioTeoricoStr = `${tt.intime} - ${tt.outtime}`;
-        horasTeoricas = tt.longtime ? Number((tt.longtime / 60).toFixed(1)) : 8.0;
-      } else {
-        horarioTeoricoStr = '08:00 - 17:00';
-        horasTeoricas = 9.0;
-      }
-
-      if (primera && ultima && primera.fechaHora !== ultima.fechaHora) {
-        const diffMs = new Date(ultima.fechaHora).getTime() - new Date(primera.fechaHora).getTime();
-        duracionRealHs = (diffMs / (1000 * 3600)).toFixed(2);
-        tramos.push({
-          tramo: 'Jornada Corrida',
-          entrada: primera.hora,
-          salida: ultima.hora,
-          duracion: `${duracionRealHs} hs`
-        });
-      }
-      countCorrido++;
+    } else if (assignedTTs.length >= 2) {
+      const t1 = assignedTTs[0];
+      const t2 = assignedTTs[1];
+      horarioTeoricoStr = `${t1.intime}-${t1.outtime} / ${t2.intime}-${t2.outtime}`;
+      horasTeoricas = Number(((t1.longtime + t2.longtime) / 60).toFixed(1));
     }
 
-    if (tipoHorario !== 'TODOS' && tipo !== tipoHorario) {
+    if (userCheckins.length === 0) {
+      const leave = getUserLeaveOnDate(u.userid, targetDate);
+      if (leave) {
+        countExcepciones++;
+        resultList.push({
+          userid: u.userid,
+          legajo: u.legajo,
+          empleado: u.nombre,
+          deptId: u.deptId,
+          departamento: u.departamento,
+          fecha: targetDate,
+          tipoHorario: 'CORRIDO',
+          horarioTeorico: horarioTeoricoStr,
+          horasTeoricas,
+          fichadasCount: 0,
+          entradaReal: '--:--:--',
+          salidaReal: '--:--:--',
+          horasRealesNetas: '0.00 hs',
+          horasDescanso: '0.00 hs',
+          duracionRealHs: `Excepción (${leave.className})`,
+          estado: 'EXCEPCION',
+          excepcion: {
+            classId: leave.classId,
+            className: leave.className,
+            showAs: leave.showAs,
+            whys: leave.whys
+          },
+          tramos: [],
+          fichadasRaw: []
+        });
+      } else {
+        countAusentes++;
+        resultList.push({
+          userid: u.userid,
+          legajo: u.legajo,
+          empleado: u.nombre,
+          deptId: u.deptId,
+          departamento: u.departamento,
+          fecha: targetDate,
+          tipoHorario: 'CORRIDO',
+          horarioTeorico: horarioTeoricoStr,
+          horasTeoricas,
+          fichadasCount: 0,
+          entradaReal: '--:--:--',
+          salidaReal: '--:--:--',
+          horasRealesNetas: '0.00 hs',
+          horasDescanso: '0.00 hs',
+          duracionRealHs: 'Sin Registro',
+          estado: 'ABSENT',
+          excepcion: null,
+          tramos: [],
+          fichadasRaw: []
+        });
+      }
       return;
     }
 
-    const leave = getUserLeaveOnDate(u.userid, targetDate);
-    if (leave) {
-      estado = 'EXCEPCION';
-      countExcepciones++;
-    } else if (dayCheckins.length === 0) {
-      estado = 'ABSENT';
-      countAusentes++;
-    } else if (!ultima || (primera && ultima && primera.fechaHora === ultima.fechaHora)) {
-      estado = 'INCOMPLETE';
-    } else {
-      estado = 'PUNCTUAL';
+    // Calcular jornada completa mediante el motor unificado de tramos y descansos
+    const att = calculateUserDayAttendance({
+      userid: u.userid,
+      user: u,
+      workDate: targetDate,
+      checkins: userCheckins,
+      assignedTimetables: assignedTTs
+    });
+
+    if (tipoHorario !== 'TODOS' && att.tipoHorario !== tipoHorario) {
+      return;
     }
+
+    if (att.tipoHorario === 'NOCTURNO') countNocturno++;
+    else if (att.tipoHorario === 'CORTADO') countCortado++;
+    else countCorrido++;
 
     resultList.push({
       userid: u.userid,
@@ -1536,24 +1739,21 @@ export const getEmpleadosTurnos = ({
       deptId: u.deptId,
       departamento: u.departamento,
       fecha: targetDate,
-      tipoHorario: tipo,
+      tipoHorario: att.tipoHorario,
       horarioTeorico: horarioTeoricoStr,
       horasTeoricas,
-      fichadasCount: dayCheckins.length,
-      entradaReal: primera ? primera.hora : '--:--:--',
-      salidaReal: ultima ? ultima.hora : '--:--:--',
-      duracionRealHs: duracionRealHs ? `${duracionRealHs} hs` : (leave ? `Excepción (${leave.className})` : (estado === 'ABSENT' ? 'Sin Registro' : 'Sin Salida')),
-      estado,
-      excepcion: leave ? {
-        classId: leave.classId,
-        className: leave.className,
-        showAs: leave.showAs,
-        whys: leave.whys,
-        beginTime: leave.beginTime,
-        endTime: leave.endTime
-      } : null,
-      tramos,
-      fichadasRaw: dayCheckins.map(c => ({ hora: c.hora, molineteId: c.molineteId }))
+      fichadasCount: att.totalFichadas,
+      entradaReal: att.entradaReal,
+      salidaReal: att.salidaReal,
+      horasRealesNetas: att.horasTrabajadas,
+      horasDescanso: att.horasDescanso,
+      duracionRealHs: att.horasTrabajadas,
+      estado: att.estado,
+      excepcion: att.excepcion,
+      tramos: att.detalleTramos,
+      molineteEntrada: att.molineteEntrada,
+      molineteSalida: att.molineteSalida,
+      fichadasRaw: att.fichadasRaw
     });
   });
 
@@ -1568,6 +1768,7 @@ export const getEmpleadosTurnos = ({
   return {
     success: true,
     fecha: targetDate,
+    jornadaOperativa: `${targetDate} 06:00 a ${targetDate} (+1d 06:00)`,
     total,
     page: pageNum,
     limit: pageSize,

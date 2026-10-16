@@ -141,7 +141,7 @@ router.get('/turnos/empleados', (req, res) => {
 // GET /api/fichadas - Consulta paginada y filtrada de marcaciones
 router.get('/fichadas', (req, res) => {
   try {
-    const { legajo, empleado, deptId, fechaDesde, fechaHasta, molineteId, page, limit } = req.query;
+    const { legajo, empleado, deptId, fechaDesde, fechaHasta, molineteId, tipoRegistro, useOperationalDate, page, limit } = req.query;
     const result = getFichadas({
       legajo,
       empleado,
@@ -149,6 +149,8 @@ router.get('/fichadas', (req, res) => {
       fechaDesde,
       fechaHasta,
       molineteId,
+      tipoRegistro,
+      useOperationalDate: useOperationalDate === 'true',
       page,
       limit
     });

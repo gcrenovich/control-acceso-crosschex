@@ -78,6 +78,7 @@ export const validateQueryParams = (req, res, next) => {
     if (q.legajo) req.query.legajo = sanitizeString(q.legajo);
     if (q.estado) req.query.estado = sanitizeString(q.estado);
     if (q.tipoHorario) req.query.tipoHorario = sanitizeString(q.tipoHorario);
+    if (q.tipoRegistro) req.query.tipoRegistro = sanitizeString(q.tipoRegistro).toUpperCase();
 
     // Validar formato de fechas (YYYY-MM-DD)
     const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
