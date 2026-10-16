@@ -196,10 +196,33 @@ try {
     if (Test-Path "$outputDir\user_leaves.json") { Remove-Item "$outputDir\user_leaves.json" -Force }
     Move-Item "$outputDir\user_leaves.json.tmp" "$outputDir\user_leaves.json" -Force
 
-    Write-Host "Exportando Marcaciones..."
+    Write-Host "Exportando Dispositivos/Molinetes (FingerClient)..."
+    try {
+        $cmdDev = $conn.CreateCommand()
+        $cmdDev.CommandText = "SELECT Clientid, ClientNumber, ClientName, ipaddress, RecStatus, Floorid, DeviceType FROM FingerClient"
+        $adapterDev = New-Object System.Data.OleDb.OleDbDataAdapter($cmdDev)
+        $dtDev = New-Object System.Data.DataTable
+        $adapterDev.Fill($dtDev) | Out-Null
+        $devList = @()
+        foreach ($row in $dtDev.Rows) {
+            $obj = [ordered]@{}
+            foreach ($col in $dtDev.Columns) {
+                $obj[$col.ColumnName] = $row[$col.ColumnName]
+            }
+            $devList += $obj
+        }
+        $devJson = $devList | ConvertTo-Json -Depth 2
+        [System.IO.File]::WriteAllText("$outputDir\devices.json.tmp", $devJson, [System.Text.Encoding]::UTF8)
+        if (Test-Path "$outputDir\devices.json") { Remove-Item "$outputDir\devices.json" -Force }
+        Move-Item "$outputDir\devices.json.tmp" "$outputDir\devices.json" -Force
+    } catch {
+        Write-Host "Nota: No se pudo exportar FingerClient: $_"
+    }
+
+    Write-Host "Exportando Marcaciones con CheckType (IN/OUT)..."
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $cmdCheck = $conn.CreateCommand()
-    $cmdCheck.CommandText = "SELECT C.Logid, C.userid, C.CheckTime, C.Sensorid, C.temperature FROM Checkinout AS C ORDER BY C.CheckTime DESC"
+    $cmdCheck.CommandText = "SELECT C.Logid, C.userid, C.CheckTime, C.CheckType, C.Sensorid, C.temperature FROM Checkinout AS C ORDER BY C.CheckTime DESC"
     $adapterCheck = New-Object System.Data.OleDb.OleDbDataAdapter($cmdCheck)
     $dtCheck = New-Object System.Data.DataTable
     $adapterCheck.Fill($dtCheck) | Out-Null
@@ -211,15 +234,16 @@ try {
 
     $csvTmpPath = "$outputDir\checkinout.csv.tmp"
     $writer = New-Object System.IO.StreamWriter($csvTmpPath, $false, [System.Text.Encoding]::UTF8)
-    $writer.WriteLine("Logid,userid,CheckTime,Sensorid,temperature")
+    $writer.WriteLine("Logid,userid,CheckTime,CheckType,Sensorid,temperature")
 
     foreach ($row in $dtCheck.Rows) {
         $logid = $row["Logid"]
         $uid = $row["userid"]
         $ctime = $row["CheckTime"].ToString("yyyy-MM-dd HH:mm:ss")
+        $ctype = $row["CheckType"]
         $sensor = $row["Sensorid"]
         $temp = $row["temperature"]
-        $writer.WriteLine("$logid,$uid,$ctime,$sensor,$temp")
+        $writer.WriteLine("$logid,$uid,$ctime,$ctype,$sensor,$temp")
     }
     $writer.Close()
     if (Test-Path "$outputDir\checkinout.csv") { Remove-Item "$outputDir\checkinout.csv" -Force }

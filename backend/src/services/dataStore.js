@@ -17,8 +17,11 @@ let userShiftMap = new Map();      // userid -> Array of { Schid, BeginDate, End
 let schedulesMap = new Map();      // Schid -> schedule Object
 let schTimeMap = new Map();        // `${Schid}_${BeginDay}` -> Timeid
 
-let checkinsByDate = new Map();    // 'YYYY-MM-DD' -> Array of checkin objects
-let checkinsByUser = new Map();    // userid -> Array of checkin objects
+let devicesMap = new Map();                // sensorid/ClientNumber -> { num, name, tipo: 'IN' | 'OUT' }
+let checkinsByDate = new Map();            // 'YYYY-MM-DD' (calendario) -> Array of checkin objects
+let checkinsByOperationalDate = new Map(); // 'YYYY-MM-DD' (jornada 6am a 6am) -> Array of checkin objects
+let checkinsByUser = new Map();            // userid -> Array of checkin objects
+let checkinsByUserAndOpDate = new Map();   // `${userid}_${fechaOperativa}` -> Array of checkin objects
 let leaveClassesMap = new Map();   // Classid -> leaveClass Object
 let userLeavesList = [];           // Array of user leave objects
 let userLeavesByUser = new Map();  // userid -> Array of leave objects
@@ -26,6 +29,21 @@ let userLeavesByUser = new Map();  // userid -> Array of leave objects
 let lastSyncTime = null;
 let isSyncing = false;
 let isLoaded = false;
+
+// Función de corte de jornada: de 06:00:00 AM a 05:59:59 AM del día siguiente
+export const getOperationalDate = (dateTimeStr) => {
+  if (!dateTimeStr) return '';
+  const timePart = dateTimeStr.length >= 19 ? dateTimeStr.substring(11, 19) : (dateTimeStr.substring(11) || '00:00:00');
+  const datePart = dateTimeStr.substring(0, 10);
+
+  // Todo registro entre las 00:00:00 y las 05:59:59 pertenece a la jornada laboral del día anterior (ej: turno 21 a 05hs)
+  if (timePart < '06:00:00') {
+    const d = new Date(datePart + 'T12:00:00Z');
+    d.setUTCDate(d.getUTCDate() - 1);
+    return d.toISOString().substring(0, 10);
+  }
+  return datePart;
+};
 
 const parseTimeToMinutes = (timeStr) => {
   if (!timeStr) return 0;
