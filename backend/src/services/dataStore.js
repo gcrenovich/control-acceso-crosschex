@@ -30,18 +30,44 @@ let lastSyncTime = null;
 let isSyncing = false;
 let isLoaded = false;
 
-// Función de corte de jornada: de 06:00:00 AM a 05:59:59 AM del día siguiente
-export const getOperationalDate = (dateTimeStr) => {
+// Helper para obtener fecha y hora local exacta del sistema (evita desfases UTC en Argentina)
+export const getLocalNowStr = () => {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  const h = String(now.getHours()).padStart(2, '0');
+  const min = String(now.getMinutes()).padStart(2, '0');
+  const s = String(now.getSeconds()).padStart(2, '0');
+  return `${y}-${m}-${d} ${h}:${min}:${s}`;
+};
+
+// Función de corte de jornada operativa inteligente:
+// 1. Salidas (OUT) en la madrugada/mañana (hasta las 07:30:00) corresponden a la jornada nocturna iniciada el día anterior.
+// 2. Ingresos (IN) matutinos (a partir de las 03:30:00) corresponden a la jornada de HOY (turnos 04:00, 05:00, 06:00, 07:00).
+// 3. Ingresos muy tardíos de madrugada profunda (00:00 a 03:29:59) se asignan a la jornada del día anterior.
+export const getOperationalDate = (dateTimeStr, tipoRegistro = 'IN') => {
   if (!dateTimeStr) return '';
   const timePart = dateTimeStr.length >= 19 ? dateTimeStr.substring(11, 19) : (dateTimeStr.substring(11) || '00:00:00');
   const datePart = dateTimeStr.substring(0, 10);
 
-  // Todo registro entre las 00:00:00 y las 05:59:59 pertenece a la jornada laboral del día anterior (ej: turno 21 a 05hs)
-  if (timePart < '06:00:00') {
-    const d = new Date(datePart + 'T12:00:00Z');
-    d.setUTCDate(d.getUTCDate() - 1);
-    return d.toISOString().substring(0, 10);
+  const prevDate = () => {
+    const d = new Date(datePart + 'T12:00:00');
+    d.setDate(d.getDate() - 1);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+
+  if (tipoRegistro === 'OUT' && timePart < '07:30:00') {
+    return prevDate();
   }
+
+  if (tipoRegistro === 'IN' && timePart < '03:30:00') {
+    return prevDate();
+  }
+
   return datePart;
 };
 
@@ -421,7 +447,7 @@ export const loadData = async () => {
         }
 
         const tipoRegistroTexto = tipoRegistro === 'IN' ? 'Ingreso' : 'Salida';
-        const fechaOperativa = getOperationalDate(checkTime);
+        const fechaOperativa = getOperationalDate(checkTime, tipoRegistro);
 
         const checkinItem = {
           logid,
@@ -559,8 +585,8 @@ export const saveIngestedData = async (fileName, content) => {
 };
 
 export const getStats = () => {
-  const currentDtStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
-  const currentOpDate = getOperationalDate(currentDtStr);
+  const currentDtStr = getLocalNowStr();
+  const currentOpDate = getOperationalDate(currentDtStr, 'IN');
   const todayOpArr = checkinsByOperationalDate.get(currentOpDate) || [];
   const todayCount = todayOpArr.length;
 
@@ -906,43 +932,43 @@ export const calculateUserDayAttendance = ({
     });
   }
 
-  // Fallback de contingencia: si no se emparejó ningún tramo completo pero hay 2 o más fichadas separadas
+  // Fallback de contingencia: solo si p1 es IN y p2 es OUT (nunca emparejar al revés un OUT con un IN posterior)
   if (tramos.filter(t => t.estadoTramo === 'COMPLETO').length === 0 && clean.length >= 2) {
     const p1 = clean[0];
     const p2 = clean[clean.length - 1];
-    const diffMs = new Date(p2.fechaHora).getTime() - new Date(p1.fechaHora).getTime();
-    if (diffMs > 5 * 60 * 1000) {
-      const durMin = Math.round(diffMs / 60000);
-      const durHs = diffMs / (1000 * 3600);
-      totalTrabajadoMs = diffMs;
-      tramos.length = 0;
-      tramos.push({
-        numero: 1,
-        entrada: p1.hora,
-        salida: p2.hora,
-        entradaReal: p1.hora,
-        salidaReal: p2.hora,
-        entradaFechaHora: p1.fechaHora,
-        salidaFechaHora: p2.fechaHora,
-        molineteEntrada: p1.molineteNombre,
-        molineteSalida: p2.molineteNombre,
-        duracionMin: durMin,
-        duracionHs: Number(durHs.toFixed(2)),
-        descansoPosteriorMin: 0,
-        descansoPosteriorHs: '0.00',
-        estadoTramo: 'COMPLETO'
-      });
+    if (p1.tipoRegistro !== 'OUT' && p2.tipoRegistro !== 'IN') {
+      const diffMs = new Date(p2.fechaHora).getTime() - new Date(p1.fechaHora).getTime();
+      if (diffMs > 5 * 60 * 1000) {
+        const durMin = Math.round(diffMs / 60000);
+        const durHs = diffMs / (1000 * 3600);
+        totalTrabajadoMs = diffMs;
+        tramos.length = 0;
+        tramos.push({
+          numero: 1,
+          entrada: p1.hora,
+          salida: p2.hora,
+          entradaReal: p1.hora,
+          salidaReal: p2.hora,
+          entradaFechaHora: p1.fechaHora,
+          salidaFechaHora: p2.fechaHora,
+          molineteEntrada: p1.molineteNombre,
+          molineteSalida: p2.molineteNombre,
+          duracionMin: durMin,
+          duracionHs: Number(durHs.toFixed(2)),
+          descansoPosteriorMin: 0,
+          descansoPosteriorHs: '0.00',
+          estadoTramo: 'COMPLETO'
+        });
+      }
     }
   }
 
-  // Determinar primer ingreso real y última salida real
-  const primerIngresoItem = clean.find(c => c.tipoRegistro === 'IN') || clean[0] || null;
-  const ultimaSalidaItem = [...clean].reverse().find(c => c.tipoRegistro === 'OUT') || (clean.length > 1 ? clean[clean.length - 1] : null);
+  // Determinar primer ingreso real y última salida real legítimos
+  const primerIngresoItem = clean.find(c => c.tipoRegistro === 'IN') || null;
+  const ultimaSalidaItem = [...clean].reverse().find(c => c.tipoRegistro === 'OUT') || null;
 
   const primerIngreso = primerIngresoItem ? primerIngresoItem.hora : '--:--:--';
-  const ultimaSalida = ultimaSalidaItem && ultimaSalidaItem.fechaHora !== (primerIngresoItem && primerIngresoItem.fechaHora) 
-    ? ultimaSalidaItem.hora 
-    : '--:--:--';
+  const ultimaSalida = ultimaSalidaItem ? ultimaSalidaItem.hora : '--:--:--';
 
   // Clasificación de Turno: NOCTURNO, CORTADO, CORRIDO
   let tipo = 'CORRIDO';
@@ -1288,8 +1314,8 @@ export const classifyDepartment = (name, supDeptId = 0) => {
 };
 
 export const getCensoAsistencia = ({ fecha }) => {
-  const currentDtStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
-  const targetDate = fecha || getOperationalDate(currentDtStr);
+  const currentDtStr = getLocalNowStr();
+  const targetDate = fecha || getOperationalDate(currentDtStr, 'IN');
   
   // Utilizar índice de fecha operativa (jornadas de 06:00 AM a 06:00 AM)
   const dayCheckins = checkinsByOperationalDate.get(targetDate) || [];
@@ -1708,8 +1734,8 @@ export const getEmpleadosTurnos = ({
   const startTime = Date.now();
   const pageNum = Math.max(1, parseInt(page, 10));
   const pageSize = Math.min(200, Math.max(1, parseInt(limit, 10)));
-  const currentDtStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
-  const targetDate = fecha || getOperationalDate(currentDtStr);
+  const currentDtStr = getLocalNowStr();
+  const targetDate = fecha || getOperationalDate(currentDtStr, 'IN');
 
   const searchLegajo = legajo ? legajo.toString().toLowerCase().trim() : null;
   const searchEmpleado = empleado ? empleado.toString().toLowerCase().trim() : null;

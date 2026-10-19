@@ -163,13 +163,13 @@ router.get('/fichadas', (req, res) => {
 // GET /api/asistencia - Reporte de Asistencia y Tardanzas
 router.get('/asistencia', (req, res) => {
   try {
-    const { legajo, empleado, deptId, fechaDesde, fechaHasta, estado, tipoHorario, horarioEntrada, horarioSalida, toleranciaMin, ordenFecha, page, limit } = req.query;
+    const { fecha, legajo, empleado, deptId, fechaDesde, fechaHasta, estado, tipoHorario, horarioEntrada, horarioSalida, toleranciaMin, ordenFecha, page, limit } = req.query;
     const result = getAsistenciaReport({
       legajo,
       empleado,
       deptId,
-      fechaDesde,
-      fechaHasta,
+      fechaDesde: fechaDesde || fecha,
+      fechaHasta: fechaHasta || fecha,
       estado,
       tipoHorario,
       horarioEntrada,

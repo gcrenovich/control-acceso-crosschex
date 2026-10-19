@@ -14,6 +14,7 @@ frontend/.env.local
 # Data exports (large database sync outputs)
 backend/data/*.csv
 backend/data/*.json
+backend/data/.last_sync_token
 !backend/data/.gitkeep
 
 # Logs & temp

@@ -10,6 +10,12 @@ Get-ChildItem -Path $replicaDir -Filter "CrossChex_Exp_*" -ErrorAction SilentlyC
     Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
 }
 
+# 1. Asegurar sesión SMB activa con la PC del CrossChex si es ruta UNC
+if (![string]::IsNullOrWhiteSpace($originalPath) -and $originalPath.StartsWith("\\")) {
+    $serverName = $originalPath.Split("\")[2]
+    & net use "\\$serverName" /persistent:yes 2>$null | Out-Null
+}
+
 function Copy-SharedFile($src, $dst) {
     try {
         $srcStream = New-Object System.IO.FileStream($src, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
@@ -38,6 +44,21 @@ if (![string]::IsNullOrWhiteSpace($originalPath) -and (Test-Path $originalPath))
     Write-Host "Usando réplica existente en $replicaPath"
 }
 
+# 2. Verificación de optimización: evitar re-exportar 1 millón de filas si la base no ha cambiado
+$outputDir = "C:\Users\AnalistaIT\.gemini\antigravity-ide\scratch\control-acceso-crosschex\backend\data"
+if (!(Test-Path $outputDir)) { New-Item -ItemType Directory -Path $outputDir -Force | Out-Null }
+$lastSyncTokenFile = "$outputDir\.last_sync_token"
+
+$sourceInfo = Get-Item $sourceToUse -ErrorAction SilentlyContinue
+if ($sourceInfo -and (Test-Path "$outputDir\checkinout.csv") -and (Test-Path $lastSyncTokenFile)) {
+    $lastToken = (Get-Content $lastSyncTokenFile -Raw -ErrorAction SilentlyContinue)
+    $currentToken = "$($sourceInfo.LastWriteTime.Ticks)_$($sourceInfo.Length)"
+    if ($lastToken -and $lastToken.Trim() -eq $currentToken) {
+        Write-Host "Base de datos sin modificaciones desde última exportación ($($sourceInfo.LastWriteTime)). Exportación omitida por optimización."
+        exit 0
+    }
+}
+
 Write-Host "Creando copia de trabajo segura en $tempPath ..."
 $copied = Copy-SharedFile $sourceToUse $tempPath
 
@@ -50,9 +71,6 @@ try {
     $connStr = "Provider=Microsoft.ACE.OLEDB.12.0;Data Source=$tempPath;Persist Security Info=False;"
     $conn = New-Object System.Data.OleDb.OleDbConnection($connStr)
     $conn.Open()
-
-    $outputDir = "C:\Users\AnalistaIT\.gemini\antigravity-ide\scratch\control-acceso-crosschex\backend\data"
-    if (!(Test-Path $outputDir)) { New-Item -ItemType Directory -Path $outputDir -Force | Out-Null }
 
     Write-Host "Exportando Departamentos..."
     $cmdDept = $conn.CreateCommand()
@@ -219,37 +237,40 @@ try {
         Write-Host "Nota: No se pudo exportar FingerClient: $_"
     }
 
-    Write-Host "Exportando Marcaciones con CheckType (IN/OUT)..."
+    Write-Host "Exportando Marcaciones con CheckType (IN/OUT) mediante DataReader de alto rendimiento..."
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $cmdCheck = $conn.CreateCommand()
     $cmdCheck.CommandText = "SELECT C.Logid, C.userid, C.CheckTime, C.CheckType, C.Sensorid, C.temperature FROM Checkinout AS C ORDER BY C.CheckTime DESC"
-    $adapterCheck = New-Object System.Data.OleDb.OleDbDataAdapter($cmdCheck)
-    $dtCheck = New-Object System.Data.DataTable
-    $adapterCheck.Fill($dtCheck) | Out-Null
-    $conn.Close()
-    $sw.Stop()
-
-    Write-Host "Carga en memoria finalizada en $($sw.Elapsed.TotalSeconds) segundos. Escribiendo CSV de marcaciones..."
-    $swWrite = [System.Diagnostics.Stopwatch]::StartNew()
+    $reader = $cmdCheck.ExecuteReader()
 
     $csvTmpPath = "$outputDir\checkinout.csv.tmp"
     $writer = New-Object System.IO.StreamWriter($csvTmpPath, $false, [System.Text.Encoding]::UTF8)
     $writer.WriteLine("Logid,userid,CheckTime,CheckType,Sensorid,temperature")
 
-    foreach ($row in $dtCheck.Rows) {
-        $logid = $row["Logid"]
-        $uid = $row["userid"]
-        $ctime = $row["CheckTime"].ToString("yyyy-MM-dd HH:mm:ss")
-        $ctype = $row["CheckType"]
-        $sensor = $row["Sensorid"]
-        $temp = $row["temperature"]
+    while ($reader.Read()) {
+        $logid = $reader.GetValue(0)
+        $uid = $reader.GetValue(1)
+        $ctimeVal = $reader.GetValue(2)
+        $ctime = if ($ctimeVal -is [DateTime]) { $ctimeVal.ToString("yyyy-MM-dd HH:mm:ss") } else { [string]$ctimeVal }
+        $ctype = if ($reader.IsDBNull(3)) { 0 } else { $reader.GetValue(3) }
+        $sensor = if ($reader.IsDBNull(4)) { 1 } else { $reader.GetValue(4) }
+        $temp = if ($reader.IsDBNull(5)) { 0 } else { $reader.GetValue(5) }
         $writer.WriteLine("$logid,$uid,$ctime,$ctype,$sensor,$temp")
     }
+    $reader.Close()
     $writer.Close()
+    $conn.Close()
+    $sw.Stop()
+
     if (Test-Path "$outputDir\checkinout.csv") { Remove-Item "$outputDir\checkinout.csv" -Force }
     Move-Item $csvTmpPath "$outputDir\checkinout.csv" -Force
-    $swWrite.Stop()
 
+    # Guardar token de sincronización para evitar trabajo redundante en próximas iteraciones
+    if ($sourceInfo) {
+        Set-Content -Path $lastSyncTokenFile -Value "$($sourceInfo.LastWriteTime.Ticks)_$($sourceInfo.Length)" -Force -ErrorAction SilentlyContinue
+    }
+
+    Write-Host "Exportación de marcaciones finalizada en $($sw.Elapsed.TotalSeconds) segundos."
     Write-Host "Exportación completada exitosamente!"
 } finally {
     if ($conn) {

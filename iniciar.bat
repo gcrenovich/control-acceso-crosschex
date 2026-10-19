@@ -12,6 +12,9 @@ for /f "tokens=5" %%a in ('netstat -aon ^| findstr :5173 ^| findstr LISTENING 2^
     taskkill /F /PID %%a >nul 2>&1
 )
 
+echo Conectando recurso de base de datos en red (\\10.0.0.89)...
+net use \\10.0.0.89 /persistent:yes >nul 2>&1
+
 echo [1/2] Iniciando Backend (Node.js API)...
 start "Backend - Control Acceso" /D "%~dp0backend" cmd /k "npm.cmd run dev"
 
