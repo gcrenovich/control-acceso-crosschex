@@ -27,3 +27,4 @@ echo - Acceso Local:      http://localhost:5173
 echo - Acceso en Red LAN: http://10.0.0.109:5173 (o la IP de este equipo)
 echo.
 ping 127.0.0.1 -n 4 >nul
+
