@@ -209,7 +209,7 @@ export const loadData = async () => {
       if (parts.length >= 3) {
         const uid = Number(parts[0]);
         const tid = Number(parts[1]);
-        const wdate = parts[2].trim();
+        const wdate = parts[2].trim().substring(0, 10);
         const key = `${uid}_${wdate}`;
         if (!userTempShiftMap.has(key)) {
           userTempShiftMap.set(key, []);
@@ -752,44 +752,58 @@ export const getDepartamentos = () => {
 // Helper: Get assigned timetables for a user on a given date
 const getAssignedTimetables = (userid, dateStr) => {
   const key = `${userid}_${dateStr}`;
-  const timeids = userTempShiftMap.get(key);
-  if (timeids && timeids.length > 0) {
-    return timeids.map(id => timetablesMap.get(id)).filter(Boolean);
+  if (userTempShiftMap.has(key)) {
+    const timeids = userTempShiftMap.get(key);
+    if (timeids && timeids.length > 0) {
+      const valid = timeids.map(id => timetablesMap.get(id)).filter(Boolean);
+      if (valid.length > 0) return valid;
+      // Si la excepción diaria es -1 (Descanso/Franco programado), no caer en el turno habitual
+      if (timeids.includes(-1)) {
+        return [{
+          timeid: -1,
+          name: 'Franco / Descanso (Excepción)',
+          intime: '--:--',
+          outtime: '--:--',
+          isDayOff: true
+        }];
+      }
+    }
   }
 
   // Fallback to general user shift assignment if defined
   const userShifts = userShiftMap.get(userid);
   if (userShifts && userShifts.length > 0) {
-    for (const us of userShifts) {
-      if (us.beginDate && us.endDate) {
-        if (dateStr >= us.beginDate && dateStr <= us.endDate) {
-          const dateObj = new Date(dateStr + 'T00:00:00');
-          const dayOfWeek = dateObj.getDay();
+    // Filtrar turnos activos para la fecha y ordenar por beginDate descendente (el más reciente tiene prioridad)
+    const activeShifts = userShifts
+      .filter(us => us.beginDate && us.endDate && dateStr >= us.beginDate && dateStr <= us.endDate)
+      .sort((a, b) => b.beginDate.localeCompare(a.beginDate));
 
-          // Buscar primero por día directo de la semana (0: Dom, 1: Lun, ..., 6: Sab)
-          let schTimeKey = `${us.schid}_${dayOfWeek}`;
-          let tids = schTimeMap.get(schTimeKey);
+    for (const us of activeShifts) {
+      const schObj = schedulesMap.get(us.schid);
+      const cycles = Number(schObj?.Cycles || schObj?.cycles || 1);
+      const units = Number(schObj?.Units || schObj?.units || 1);
+      const dateObj = new Date(dateStr + 'T00:00:00');
+      const dayOfWeek = dateObj.getDay();
 
-          // Si no hay mapeo directo, revisar si el cronograma es rotativo con cycles > 1
-          if ((!tids || tids.length === 0) && schedulesMap.has(us.schid)) {
-            const schObj = schedulesMap.get(us.schid);
-            const cycles = Number(schObj.Cycles || schObj.cycles || 1);
-            if (cycles > 1) {
-              const startObj = new Date(us.beginDate + 'T00:00:00');
-              const diffDays = Math.max(0, Math.floor((dateObj - startObj) / (1000 * 3600 * 24)));
-              const cycleDay = diffDays % (cycles * 7);
-              schTimeKey = `${us.schid}_${cycleDay}`;
-              tids = schTimeMap.get(schTimeKey);
-            }
-          }
+      let schTimeKey;
+      if (cycles > 1 && us.beginDate) {
+        // Cronograma rotativo (ej: 3 semanas = 21 días)
+        const startObj = new Date(us.beginDate + 'T00:00:00');
+        const diffDays = Math.round((dateObj - startObj) / (1000 * 3600 * 24));
+        const totalDays = units === 0 ? cycles : cycles * 7;
+        const cycleDay = ((diffDays % totalDays) + totalDays) % totalDays;
+        schTimeKey = `${us.schid}_${cycleDay}`;
+      } else {
+        // Cronograma semanal regular (0: Dom, 1: Lun, ..., 6: Sab)
+        schTimeKey = `${us.schid}_${dayOfWeek}`;
+      }
 
-          if (Array.isArray(tids) && tids.length > 0) {
-            const found = tids.map(id => timetablesMap.get(id)).filter(Boolean);
-            if (found.length > 0) return found;
-          } else if (typeof tids === 'number' && timetablesMap.has(tids)) {
-            return [timetablesMap.get(tids)];
-          }
-        }
+      let tids = schTimeMap.get(schTimeKey);
+      if (Array.isArray(tids) && tids.length > 0) {
+        const found = tids.map(id => timetablesMap.get(id)).filter(Boolean);
+        if (found.length > 0) return found;
+      } else if (typeof tids === 'number' && timetablesMap.has(tids)) {
+        return [timetablesMap.get(tids)];
       }
     }
   }
@@ -979,7 +993,9 @@ export const calculateUserDayAttendance = ({
 
   const nightTT = assignedTimetables.find(t => t.isNightShift);
   const primerHoraMin = primerIngresoItem ? parseTimeToMinutes(primerIngresoItem.hora) : 0;
-  const isDynamicNight = !assignedTimetables.length && primerIngresoItem && (primerHoraMin >= 19 * 60 || primerHoraMin < 6 * 60);
+  // Detección nocturna: por asignación o por marcación real de noche (ingreso >= 19:00 o madrugada y salida en la mañana)
+  const isActualNightPunches = primerIngresoItem && primerHoraMin >= 19 * 60 && ultimaSalidaItem && parseTimeToMinutes(ultimaSalidaItem.hora) < 12 * 60;
+  const isDynamicNight = (!assignedTimetables.length || isActualNightPunches) && primerIngresoItem && (primerHoraMin >= 19 * 60 || primerHoraMin < 6 * 60);
 
   const workDateObj = new Date(workDate + 'T00:00:00');
   const dayOfWeek = workDateObj.getDay(); // 0: Dom, 1: Lun, 2: Mar, 3: Mie, 4: Jue, 5: Vie, 6: Sab
@@ -998,51 +1014,72 @@ export const calculateUserDayAttendance = ({
     };
     horarioAsignadoStr = `${tt.intime} - ${tt.outtime} (+1d) [${tt.name}]`;
     targetEntryMin = tt.intimeMin;
+    targetExitMin = tt.outtimeMin;
     toleranceMin = tt.latetime || defaultTolerance;
-    horasTeoricas = 8.0;
-  } else if (assignedTimetables.length >= 2 || trramosCompletosCount(tramos) >= 2 || totalDescansoMs >= 20 * 60 * 1000) {
-    tipo = 'CORTADO';
-    if (assignedTimetables.length >= 2) {
+    horasTeoricas = tt.longtime ? Number((tt.longtime / 60).toFixed(1)) : 8.0;
+  } else if (assignedTimetables.length >= 2) {
+    // Si tiene asignado horario cortado pero solo registró 1 tramo corrido de duración completa (>= 5.5 hs sin descanso intermedio)
+    const tramosCompletos = tramos.filter(t => t.estadoTramo === 'COMPLETO');
+    const hizoCorrido = tramosCompletos.length === 1 && totalDescansoMs < 20 * 60 * 1000 && tramosCompletos[0].duracionHs >= 5.5;
+
+    if (hizoCorrido) {
+      tipo = 'CORRIDO';
+      const t1 = assignedTimetables[0];
+      const tLast = assignedTimetables[assignedTimetables.length - 1];
+      horarioAsignadoStr = `${t1.intime} - ${tLast.outtime} [Corrido / ${t1.name}]`;
+      targetEntryMin = t1.intimeMin;
+      targetExitMin = tLast.outtimeMin;
+      toleranceMin = t1.latetime || defaultTolerance;
+      horasTeoricas = Number((((t1.longtime || 240) + (tLast.longtime || 240)) / 60).toFixed(1));
+    } else {
+      tipo = 'CORTADO';
       const t1 = assignedTimetables[0];
       const t2 = assignedTimetables[1];
       horarioAsignadoStr = `${t1.intime}-${t1.outtime} / ${t2.intime}-${t2.outtime} [${t1.name} / ${t2.name}]`;
       targetEntryMin = t1.intimeMin;
+      targetExitMin = t2.outtimeMin;
       toleranceMin = t1.latetime || defaultTolerance;
       horasTeoricas = Number((((t1.longtime || 240) + (t2.longtime || 240)) / 60).toFixed(1));
-    } else {
-      // Detección dinámica inteligente según hora de ingreso real y día:
-      if (primerHoraMin < 7 * 60 + 35) {
-        // Ingreso en torno a las 07:00 (Turno mañana 07:00 a 12:00)
-        targetEntryMin = 7 * 60;
-        toleranceMin = 15;
-        if (dayOfWeek === 5) {
-          // Viernes: salida a las 17:00
-          horarioAsignadoStr = 'Cortado (07:00-12:00 / 14:00-17:00) [Viernes]';
-          targetExitMin = 17 * 60;
-          horasTeoricas = 8.0;
-        } else {
-          // Lunes a Jueves: salida a las 18:00
-          horarioAsignadoStr = 'Cortado (07:00-12:00 / 14:00-18:00)';
-          targetExitMin = 18 * 60;
-          horasTeoricas = 9.0;
-        }
-      } else {
-        // Ingreso en torno a las 08:00 (Turno 08:00 a 12:00 y 14:00 a 18:00)
-        targetEntryMin = 8 * 60;
-        toleranceMin = 15;
-        horarioAsignadoStr = 'Cortado (08:00-12:00 / 14:00-18:00)';
-        targetExitMin = 18 * 60;
+    }
+  } else if (trramosCompletosCount(tramos) >= 2 || totalDescansoMs >= 20 * 60 * 1000) {
+    tipo = 'CORTADO';
+    // Detección dinámica inteligente según hora de ingreso real y día:
+    if (primerHoraMin < 7 * 60 + 35) {
+      targetEntryMin = 7 * 60;
+      toleranceMin = 15;
+      if (dayOfWeek === 5) {
+        horarioAsignadoStr = 'Cortado (07:00-12:00 / 14:00-17:00) [Viernes]';
+        targetExitMin = 17 * 60;
         horasTeoricas = 8.0;
+      } else {
+        horarioAsignadoStr = 'Cortado (07:00-12:00 / 14:00-18:00)';
+        targetExitMin = 18 * 60;
+        horasTeoricas = 9.0;
       }
+    } else {
+      targetEntryMin = 8 * 60;
+      toleranceMin = 15;
+      horarioAsignadoStr = 'Cortado (08:00-12:00 / 14:00-18:00)';
+      targetExitMin = 18 * 60;
+      horasTeoricas = 8.0;
     }
   } else if (assignedTimetables.length === 1) {
     const tt = assignedTimetables[0];
-    tipo = 'CORRIDO';
-    horarioAsignadoStr = `${tt.intime} - ${tt.outtime} [${tt.name}]`;
-    targetEntryMin = tt.intimeMin;
-    targetExitMin = tt.outtimeMin;
-    toleranceMin = tt.latetime || defaultTolerance;
-    horasTeoricas = tt.longtime ? Number((tt.longtime / 60).toFixed(1)) : 8.0;
+    if (tt.isDayOff) {
+      tipo = 'FRANCO';
+      horarioAsignadoStr = `[${tt.name}]`;
+      targetEntryMin = 0;
+      targetExitMin = 0;
+      toleranceMin = 0;
+      horasTeoricas = 0.0;
+    } else {
+      tipo = 'CORRIDO';
+      horarioAsignadoStr = `${tt.intime} - ${tt.outtime} [${tt.name}]`;
+      targetEntryMin = tt.intimeMin;
+      targetExitMin = tt.outtimeMin;
+      toleranceMin = tt.latetime || defaultTolerance;
+      horasTeoricas = tt.longtime ? Number((tt.longtime / 60).toFixed(1)) : 8.0;
+    }
   } else {
     // Sin asignación en tabla: evaluar jornada según marcaciones reales
     if (dayOfWeek === 6 && primerHoraMin >= 6 * 60 && primerHoraMin <= 10 * 60) {
@@ -1084,8 +1121,9 @@ export const calculateUserDayAttendance = ({
   if (primerIngresoItem) {
     const entMin = parseTimeToMinutes(primerIngresoItem.hora);
     if (tipo === 'NOCTURNO') {
-      if (entMin > targetEntryMin + toleranceMin && entMin >= 18 * 60) {
-        minutosTardanza = entMin - targetEntryMin;
+      const effectiveEntMin = entMin < 12 * 60 ? entMin + 1440 : entMin;
+      if (effectiveEntMin > targetEntryMin + toleranceMin) {
+        minutosTardanza = effectiveEntMin - targetEntryMin;
       }
     } else {
       if (entMin > targetEntryMin + toleranceMin) {

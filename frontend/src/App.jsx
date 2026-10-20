@@ -2293,6 +2293,11 @@ export default function App() {
                             ⏱️ Corrido
                           </span>
                         )}
+                        {row.tipoHorario === 'FRANCO' && (
+                          <span style={{ padding: '3px 8px', borderRadius: '6px', fontSize: '0.75rem', fontWeight: 700, background: 'rgba(107, 114, 128, 0.2)', color: '#9ca3af', border: '1px solid rgba(107, 114, 128, 0.4)' }}>
+                            🏖️ Franco
+                          </span>
+                        )}
                       </td>
                       <td className="time-cell" style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>{row.horarioAsignado}</td>
                       <td className="time-cell" style={{ color: '#10b981', fontWeight: 600 }}>{row.entradaReal}</td>
