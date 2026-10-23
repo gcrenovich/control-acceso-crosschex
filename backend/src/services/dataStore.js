@@ -25,6 +25,8 @@ let checkinsByUserAndOpDate = new Map();   // `${userid}_${fechaOperativa}` -> A
 let leaveClassesMap = new Map();   // Classid -> leaveClass Object
 let userLeavesList = [];           // Array of user leave objects
 let userLeavesByUser = new Map();  // userid -> Array of leave objects
+let holidaysMap = new Map();       // 'YYYY-MM-DD' -> holiday Object
+let holidaysList = [];             // Array of holiday objects
 
 let lastSyncTime = null;
 let isSyncing = false;
@@ -378,6 +380,60 @@ export const loadData = async () => {
     }
   }
 
+  // Load Holidays (Feriados Nacionales y Personalizados)
+  holidaysMap.clear();
+  holidaysList = [];
+  const holidaysPath = path.join(DATA_DIR, 'holidays.json');
+  if (fs.existsSync(holidaysPath)) {
+    try {
+      const raw = fs.readFileSync(holidaysPath, 'utf8').replace(/^\uFEFF/, '').trim();
+      if (raw) {
+        const list = JSON.parse(raw);
+        if (Array.isArray(list)) {
+          list.forEach(h => {
+            const fechaStr = String(h.fecha || '').substring(0, 10);
+            if (fechaStr) {
+              const hObj = {
+                fecha: fechaStr,
+                nombre: String(h.nombre || 'Feriado').trim(),
+                tipo: String(h.tipo || 'nacional').trim()
+              };
+              holidaysMap.set(fechaStr, hObj);
+              holidaysList.push(hObj);
+            }
+          });
+        }
+      }
+    } catch (err) {
+      console.error('⚠️ Error al parsear holidays.json:', err.message);
+    }
+  }
+
+  // Integrar feriados de CrossChex si existen
+  const cxHolPath = path.join(DATA_DIR, 'crosschex_holidays.json');
+  if (fs.existsSync(cxHolPath)) {
+    try {
+      const raw = fs.readFileSync(cxHolPath, 'utf8').replace(/^\uFEFF/, '').trim();
+      if (raw) {
+        const list = JSON.parse(raw);
+        if (Array.isArray(list)) {
+          list.forEach(h => {
+            const fechaStr = String(h.BDate || '').substring(0, 10);
+            if (fechaStr && !holidaysMap.has(fechaStr)) {
+              const hObj = {
+                fecha: fechaStr,
+                nombre: String(h.Name || 'Feriado CrossChex').trim(),
+                tipo: 'crosschex'
+              };
+              holidaysMap.set(fechaStr, hObj);
+              holidaysList.push(hObj);
+            }
+          });
+        }
+      }
+    } catch (err) {}
+  }
+
   // Stream CSV Checkins & Build High-Performance Indices
   checkinList = [];
   checkinsByDate.clear();
@@ -561,7 +617,9 @@ export const saveIngestedData = async (fileName, content) => {
     'leave_classes.json',
     'user_leaves.json',
     'devices.json',
-    'checkinout.csv'
+    'checkinout.csv',
+    'holidays.json',
+    'crosschex_holidays.json'
   ]);
 
   const baseName = path.basename(fileName);
@@ -750,7 +808,7 @@ export const getDepartamentos = () => {
 };
 
 // Helper: Get assigned timetables for a user on a given date
-const getAssignedTimetables = (userid, dateStr) => {
+export const getAssignedTimetables = (userid, dateStr) => {
   const key = `${userid}_${dateStr}`;
   if (userTempShiftMap.has(key)) {
     const timeids = userTempShiftMap.get(key);
@@ -1114,20 +1172,66 @@ export const calculateUserDayAttendance = ({
     }
   }
 
-  // Cálculo de tardanza
+  // Cálculo de tardanzas y salidas temprano por tramo / turno
   let minutosTardanza = 0;
+  let minutosSalidaTemprano = 0;
   let estadoAcceso = 'PUNCTUAL';
 
-  if (primerIngresoItem) {
-    const entMin = parseTimeToMinutes(primerIngresoItem.hora);
-    if (tipo === 'NOCTURNO') {
-      const effectiveEntMin = entMin < 12 * 60 ? entMin + 1440 : entMin;
-      if (effectiveEntMin > targetEntryMin + toleranceMin) {
-        minutosTardanza = effectiveEntMin - targetEntryMin;
+  if (assignedTimetables && assignedTimetables.length >= 2 && tramos.length >= 1) {
+    // Horario cortado o rotativo con múltiples turnos por día
+    for (let idx = 0; idx < assignedTimetables.length; idx++) {
+      const tt = assignedTimetables[idx];
+      const tr = tramos[idx];
+      if (!tr) continue;
+
+      const segIntimeMin = tt.intimeMin !== undefined ? tt.intimeMin : parseTimeToMinutes(tt.intime);
+      const segOuttimeMin = tt.outtimeMin !== undefined ? tt.outtimeMin : parseTimeToMinutes(tt.outtime);
+      const segTolMin = tt.latetime !== undefined ? tt.latetime : 0;
+
+      // Tardanza del tramo (si supera la tolerancia, se computa la diferencia desde el horario nominal)
+      if (tr.entradaReal && tr.entradaReal !== '--:--:--') {
+        const trEntMin = parseTimeToMinutes(tr.entradaReal);
+        if (trEntMin > segIntimeMin + segTolMin) {
+          minutosTardanza += (trEntMin - segIntimeMin);
+        }
       }
-    } else {
-      if (entMin > targetEntryMin + toleranceMin) {
-        minutosTardanza = entMin - targetEntryMin;
+
+      // Salida temprana del tramo
+      if (tr.salidaReal && tr.salidaReal !== '--:--:--') {
+        const [h, m, s] = tr.salidaReal.split(':').map(Number);
+        const exitSec = h * 3600 + m * 60 + (s || 0);
+        const targetSec = segOuttimeMin * 60;
+        if (exitSec < targetSec) {
+          const diffSec = targetSec - exitSec;
+          minutosSalidaTemprano += Math.ceil(diffSec / 60);
+        }
+      }
+    }
+  } else {
+    // Turno simple (Corrido / Nocturno / Especial)
+    if (primerIngresoItem) {
+      const entMin = parseTimeToMinutes(primerIngresoItem.hora);
+      if (tipo === 'NOCTURNO') {
+        const effectiveEntMin = entMin < 12 * 60 ? entMin + 1440 : entMin;
+        if (effectiveEntMin > targetEntryMin + toleranceMin) {
+          minutosTardanza = effectiveEntMin - targetEntryMin;
+        }
+      } else {
+        if (entMin > targetEntryMin + toleranceMin) {
+          minutosTardanza = entMin - targetEntryMin;
+        }
+      }
+    }
+
+    if (ultimaSalidaItem && ultimaSalidaItem.hora && targetExitMin > 0) {
+      const [h, m, s] = ultimaSalidaItem.hora.split(':').map(Number);
+      const exitSec = h * 3600 + m * 60 + (s || 0);
+      const targetSec = targetExitMin * 60;
+      if (exitSec < targetSec) {
+        const diffSec = targetSec - exitSec;
+        if (diffSec <= 4 * 3600) {
+          minutosSalidaTemprano = Math.ceil(diffSec / 60);
+        }
       }
     }
   }
@@ -1147,6 +1251,17 @@ export const calculateUserDayAttendance = ({
     estadoAcceso = 'EXCEPCION';
   }
 
+  const hol = getHolidayOnDate(workDate);
+  const esFeriado = Boolean(hol);
+  const nombreFeriado = hol ? hol.nombre : null;
+  if (esFeriado) {
+    if (clean.length > 0) {
+      estadoAcceso = 'FERIADO_TRABAJADO';
+    } else {
+      estadoAcceso = 'FERIADO';
+    }
+  }
+
   const horasTrabajadasNum = Number((totalTrabajadoMs / (1000 * 3600)).toFixed(2));
   const horasDescansoNum = Number((totalDescansoMs / (1000 * 3600)).toFixed(2));
 
@@ -1164,11 +1279,14 @@ export const calculateUserDayAttendance = ({
     salidaReal: ultimaSalida,
     totalFichadas: clean.length,
     minutosTardanza,
+    minutosSalidaTemprano,
+    esFeriado,
+    nombreFeriado,
     horasTrabajadasNum,
     horasDescansoNum,
-    horasTrabajadas: horasTrabajadasNum > 0 ? `${horasTrabajadasNum.toFixed(2)} hs` : (leave ? `Excepción (${leave.className})` : 'Sin Salida'),
+    horasTrabajadas: horasTrabajadasNum > 0 ? `${horasTrabajadasNum.toFixed(2)} hs` : (leave ? `Excepción (${leave.className})` : (esFeriado ? `Feriado (${nombreFeriado})` : 'Sin Salida')),
     horasDescanso: `${horasDescansoNum.toFixed(2)} hs`,
-    duracionHoras: horasTrabajadasNum > 0 ? `${horasTrabajadasNum.toFixed(2)} hs` : (leave ? `Excepción (${leave.className})` : 'Sin Salida'),
+    duracionHoras: horasTrabajadasNum > 0 ? `${horasTrabajadasNum.toFixed(2)} hs` : (leave ? `Excepción (${leave.className})` : (esFeriado ? `Feriado (${nombreFeriado})` : 'Sin Salida')),
     cantidadTramos: tramos.length,
     tramos: tramos,
     detalleTramos: tramos,
@@ -1209,7 +1327,8 @@ export const getAsistenciaReport = ({
   toleranciaMin = 15,
   ordenFecha = 'ASC',
   page = 1,
-  limit = 50
+  limit = 50,
+  exportAll = false
 }) => {
   const startTime = Date.now();
   const pageNum = Math.max(1, parseInt(page, 10));
@@ -1318,7 +1437,7 @@ export const getAsistenciaReport = ({
   const total = summary.length;
   const totalPages = Math.ceil(total / pageSize);
   const offset = (pageNum - 1) * pageSize;
-  const data = summary.slice(offset, offset + pageSize);
+  const data = exportAll ? summary : summary.slice(offset, offset + pageSize);
   const elapsedMs = Date.now() - startTime;
 
   return {
@@ -1522,8 +1641,7 @@ export const getEstadisticasReport = ({
     horarioEntrada,
     horarioSalida,
     toleranciaMin,
-    page: 1,
-    limit: 100000
+    exportAll: true
   });
 
   const userStatsMap = new Map();
@@ -1550,6 +1668,7 @@ export const getEstadisticasReport = ({
     const uStat = userStatsMap.get(item.userid);
     uStat.trabajadosDias++;
     uStat.llegadasTardeMin += item.minutosTardanza;
+    uStat.salidasTempranoMin += (item.minutosSalidaTemprano || 0);
     if (item.horasTrabajadasNum !== undefined) {
       uStat.totalTrabajadoHs += item.horasTrabajadasNum;
       uStat.totalDescansoHs += (item.horasDescansoNum || 0);
@@ -1580,10 +1699,45 @@ export const getEstadisticasReport = ({
       tiposHorarioSet: new Set()
     };
 
-    const laboralesDias = diffDays;
-    const trabajadosDias = uStat.trabajadosDias;
-    const ausenteDias = Math.max(0, laboralesDias - trabajadosDias);
+    // Detección exacta de días laborables, feriados y descansos según el cronograma del empleado
+    let laboralesDias = 0;
+    let feriadosDias = 0;
+    let feriadosTrabajadosDias = 0;
+    let descansosDias = 0;
 
+    for (let cur = new Date(startStr + 'T12:00:00'); cur <= new Date(endStr + 'T12:00:00'); cur.setDate(cur.getDate() + 1)) {
+      const y = cur.getFullYear();
+      const m = String(cur.getMonth() + 1).padStart(2, '0');
+      const d = String(cur.getDate()).padStart(2, '0');
+      const dStr = `${y}-${m}-${d}`;
+      const dow = cur.getDay();
+
+      const assigned = getAssignedTimetables(u.userid, dStr);
+      const isScheduled = assigned.length > 0 && !assigned.some(t => t.isDayOff);
+      const isDefaultWorkday = (!userShiftMap.has(u.userid) || userShiftMap.get(u.userid).length === 0) && (dow >= 1 && dow <= 5);
+      const isWorkday = isScheduled || isDefaultWorkday;
+
+      const hol = getHolidayOnDate(dStr);
+      const hasPunches = checkinsByUserAndOpDate.has(`${u.userid}_${dStr}`);
+
+      if (hol) {
+        if (hasPunches) {
+          feriadosTrabajadosDias++;
+          laboralesDias++;
+        } else {
+          feriadosDias++;
+          if (isWorkday) {
+            laboralesDias++;
+          }
+        }
+      } else if (isWorkday) {
+        laboralesDias++;
+      } else {
+        descansosDias++;
+      }
+    }
+
+    const trabajadosDias = uStat.trabajadosDias;
     const userLeaves = userLeavesByUser.get(u.userid) || [];
     let licenciasDias = 0;
     const licenciasSet = new Set();
@@ -1612,14 +1766,17 @@ export const getEstadisticasReport = ({
         }
       }
     });
-    licenciasDias = Math.min(diffDays, licenciasDias);
-    const ausenteInjustificadoDias = Math.max(0, ausenteDias - licenciasDias);
+
+    licenciasDias = Math.min(laboralesDias, licenciasDias);
+    // Ausente: días laborables en los que no se trabajó, no fue feriado y no hubo licencia justificada
+    const ausenteDias = Math.max(0, laboralesDias - trabajadosDias - feriadosDias - licenciasDias);
+    const ausenteInjustificadoDias = ausenteDias;
 
     const tipos = Array.from(uStat.tiposHorarioSet);
     const tipoHabitual = tipos.length > 0 ? tipos.join(', ') : 'CORRIDO';
 
     const presentismoPct = laboralesDias > 0 
-      ? Number(((trabajadosDias / laboralesDias) * 100).toFixed(1))
+      ? Number((((trabajadosDias + feriadosDias + licenciasDias) / laboralesDias) * 100).toFixed(1))
       : 0;
 
     statsList.push({
@@ -1633,8 +1790,11 @@ export const getEstadisticasReport = ({
       llegadasTardeMin: uStat.llegadasTardeMin,
       salidasTempranoMin: uStat.salidasTempranoMin,
       ausenteDias,
+      feriadosDias,
+      feriadosTrabajadosDias,
       licenciasDias,
       ausenteInjustificadoDias,
+      descansosDias,
       licenciasDetalle: Array.from(licenciasSet).join(', '),
       tiempoExtraMin: 0,
       overtime1Min: 0,
@@ -2005,4 +2165,38 @@ export const getExcepcionesReport = ({
     data
   };
 };
+
+export const getHolidays = () => {
+  return [...holidaysList].sort((a, b) => a.fecha.localeCompare(b.fecha));
+};
+
+export const getHolidayOnDate = (dateStr) => {
+  if (!dateStr) return null;
+  const dStr = dateStr.substring(0, 10);
+  return holidaysMap.get(dStr) || null;
+};
+
+export const addHoliday = ({ fecha, nombre, tipo = 'nacional' }) => {
+  if (!fecha || !nombre) throw new Error('fecha y nombre son requeridos');
+  const dStr = fecha.substring(0, 10);
+  const item = { fecha: dStr, nombre: nombre.trim(), tipo: tipo.trim() };
+  holidaysMap.set(dStr, item);
+  holidaysList = holidaysList.filter(h => h.fecha !== dStr);
+  holidaysList.push(item);
+  holidaysList.sort((a, b) => a.fecha.localeCompare(b.fecha));
+  const filePath = path.join(DATA_DIR, 'holidays.json');
+  fs.writeFileSync(filePath, JSON.stringify(holidaysList, null, 2), 'utf8');
+  return item;
+};
+
+export const removeHoliday = (fecha) => {
+  if (!fecha) return false;
+  const dStr = fecha.substring(0, 10);
+  holidaysMap.delete(dStr);
+  holidaysList = holidaysList.filter(h => h.fecha !== dStr);
+  const filePath = path.join(DATA_DIR, 'holidays.json');
+  fs.writeFileSync(filePath, JSON.stringify(holidaysList, null, 2), 'utf8');
+  return true;
+};
+
 

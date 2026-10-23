@@ -42,7 +42,7 @@ const corsOptions = {
 app.use(cors(corsOptions));
 
 // 3. Limitación de tamaño de payload para mitigar ataques DoS
-app.use(express.json({ limit: '15mb' }));
+app.use(express.json({ limit: '100mb' }));
 
 // 4. Rate Limiting general para la API
 app.use('/api', apiLimiter);

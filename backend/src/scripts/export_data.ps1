@@ -233,8 +233,28 @@ try {
         [System.IO.File]::WriteAllText("$outputDir\devices.json.tmp", $devJson, [System.Text.Encoding]::UTF8)
         if (Test-Path "$outputDir\devices.json") { Remove-Item "$outputDir\devices.json" -Force }
         Move-Item "$outputDir\devices.json.tmp" "$outputDir\devices.json" -Force
+    Write-Host "Exportando Feriados de CrossChex (Holiday)..."
+    try {
+        $cmdHol = $conn.CreateCommand()
+        $cmdHol.CommandText = "SELECT Holidayid, Name, BDate, Days FROM Holiday"
+        $adapterHol = New-Object System.Data.OleDb.OleDbDataAdapter($cmdHol)
+        $dtHol = New-Object System.Data.DataTable
+        $adapterHol.Fill($dtHol) | Out-Null
+        $holList = @()
+        foreach ($row in $dtHol.Rows) {
+            $obj = [ordered]@{}
+            $obj["Holidayid"] = $row["Holidayid"]
+            $obj["Name"] = $row["Name"]
+            $obj["BDate"] = if ($row["BDate"] -is [DateTime]) { $row["BDate"].ToString("yyyy-MM-dd") } else { [string]$row["BDate"] }
+            $obj["Days"] = [int]$row["Days"]
+            $holList += $obj
+        }
+        $holJson = $holList | ConvertTo-Json -Depth 2
+        [System.IO.File]::WriteAllText("$outputDir\crosschex_holidays.json.tmp", $holJson, [System.Text.Encoding]::UTF8)
+        if (Test-Path "$outputDir\crosschex_holidays.json") { Remove-Item "$outputDir\crosschex_holidays.json" -Force }
+        Move-Item "$outputDir\crosschex_holidays.json.tmp" "$outputDir\crosschex_holidays.json" -Force
     } catch {
-        Write-Host "Nota: No se pudo exportar FingerClient: $_"
+        Write-Host "Nota: No se pudo exportar Holiday: $_"
     }
 
     Write-Host "Exportando Marcaciones con CheckType (IN/OUT) mediante DataReader de alto rendimiento..."

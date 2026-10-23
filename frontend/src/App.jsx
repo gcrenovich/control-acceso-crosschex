@@ -1098,6 +1098,7 @@ export default function App() {
                         <th>Llegadas tarde [Minutos]</th>
                         <th>Salidas temprano [Minutos]</th>
                         <th>Ausente [Días]</th>
+                        <th>Feriados [Días]</th>
                         <th>Tiempo extra [Minutos]</th>
                         <th>Overtime1 [Minutos]</th>
                         <th>Overtime2 [Minutos]</th>
@@ -1135,7 +1136,7 @@ export default function App() {
                           </td>
                           <td className="time-cell">{row.userid}</td>
                           <td style={{ fontWeight: 700, color: '#fff' }}>{row.nombre}</td>
-                          <td style={{ textAlign: 'center' }}>{row.laboralesDias}</td>
+                          <td style={{ textAlign: 'center', fontWeight: 600 }}>{row.laboralesDias}</td>
                           <td style={{ textAlign: 'center', color: '#10b981', fontWeight: 700 }}>{row.trabajadosDias}</td>
                           <td style={{ textAlign: 'center', color: row.llegadasTardeMin > 0 ? '#f43f5e' : 'var(--text-muted)', fontWeight: row.llegadasTardeMin > 0 ? 700 : 400 }}>
                             {row.llegadasTardeMin > 0 ? `${row.llegadasTardeMin} min` : '0'}
@@ -1145,6 +1146,9 @@ export default function App() {
                           </td>
                           <td style={{ textAlign: 'center', color: row.ausenteDias > 0 ? '#f43f5e' : 'var(--text-muted)', fontWeight: row.ausenteDias > 0 ? 700 : 400 }}>
                             {row.ausenteDias}
+                          </td>
+                          <td style={{ textAlign: 'center', color: row.feriadosDias > 0 ? '#38bdf8' : 'var(--text-muted)', fontWeight: row.feriadosDias > 0 ? 700 : 400 }}>
+                            {row.feriadosDias || 0}
                           </td>
                           <td style={{ textAlign: 'center', color: '#06b6d4' }}>{row.tiempoExtraMin}</td>
                           <td style={{ textAlign: 'center' }}>{row.overtime1Min}</td>
@@ -2331,6 +2335,16 @@ export default function App() {
                         )}
                       </td>
                       <td>
+                        {row.estado === 'FERIADO_TRABAJADO' && (
+                          <span style={{ background: 'rgba(56, 189, 248, 0.15)', color: '#38bdf8', border: '1px solid rgba(56, 189, 248, 0.3)', padding: '4px 8px', borderRadius: '4px', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.8rem', fontWeight: 600 }}>
+                            <Calendar size={13} /> Feriado Trabajado {row.nombreFeriado ? `(${row.nombreFeriado})` : ''}
+                          </span>
+                        )}
+                        {row.estado === 'FERIADO' && (
+                          <span style={{ background: 'rgba(56, 189, 248, 0.15)', color: '#38bdf8', border: '1px solid rgba(56, 189, 248, 0.3)', padding: '4px 8px', borderRadius: '4px', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.8rem', fontWeight: 600 }}>
+                            <Calendar size={13} /> Feriado {row.nombreFeriado ? `(${row.nombreFeriado})` : ''}
+                          </span>
+                        )}
                         {row.estado === 'EXCEPCION' && (
                           <span className={getExceptionBadgeClass(row.excepcion?.classId)} title={row.excepcion?.whys || ''}>
                             <AlertCircle size={13} /> {row.excepcion?.className || 'Excepción'}

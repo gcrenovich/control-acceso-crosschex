@@ -12,6 +12,9 @@ import {
   getEmpleadosTurnos,
   getExcepcionesReport,
   getLeaveClasses,
+  getHolidays,
+  addHoliday,
+  removeHoliday,
   saveIngestedData,
   loadData
 } from '../services/dataStore.js';
@@ -59,6 +62,41 @@ router.get('/excepciones/classes', (req, res) => {
   try {
     const classes = getLeaveClasses();
     res.json({ success: true, count: classes.length, data: classes });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET /api/feriados - Catálogo de Feriados Nacionales y Personalizados
+router.get('/feriados', (req, res) => {
+  try {
+    const holidays = getHolidays();
+    res.json({ success: true, count: holidays.length, data: holidays });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST /api/feriados - Agregar o actualizar un día feriado
+router.post('/feriados', (req, res) => {
+  try {
+    const { fecha, nombre, tipo } = req.body;
+    if (!fecha || !nombre) {
+      return res.status(400).json({ success: false, error: 'Fecha y nombre son obligatorios (YYYY-MM-DD)' });
+    }
+    const holiday = addHoliday({ fecha, nombre, tipo });
+    res.json({ success: true, message: 'Feriado guardado correctamente', data: holiday });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+// DELETE /api/feriados/:fecha - Eliminar un feriado
+router.delete('/feriados/:fecha', (req, res) => {
+  try {
+    const { fecha } = req.params;
+    const removed = removeHoliday(fecha);
+    res.json({ success: true, message: removed ? 'Feriado eliminado' : 'Feriado no encontrado' });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -218,7 +256,7 @@ router.post('/sync', syncLimiter, requireApiKey, async (req, res) => {
 // POST /api/sync/push - Endpoint de ingesta segura para transferir datos a Ubuntu
 router.post('/sync/push', syncLimiter, requireApiKey, async (req, res) => {
   try {
-    const { files, fileName, content } = req.body;
+    const { files, fileName, content, reload = true } = req.body;
 
     if (Array.isArray(files) && files.length > 0) {
       for (const item of files) {
@@ -233,12 +271,14 @@ router.post('/sync/push', syncLimiter, requireApiKey, async (req, res) => {
       return res.status(400).json({ success: false, error: 'Debe enviar fileName y content, o un array files' });
     }
 
-    // Recargar datos en memoria tras la ingesta exitosa
-    await loadData();
+    // Recargar datos en memoria tras la ingesta exitosa si reload !== false
+    if (reload !== false) {
+      await loadData();
+    }
 
     res.json({
       success: true,
-      message: 'Archivos ingeridos y dataset recargado en memoria exitosamente.',
+      message: 'Archivos ingeridos ' + (reload !== false ? 'y dataset recargado en memoria exitosamente.' : 'exitosamente.'),
       timestamp: new Date().toISOString()
     });
   } catch (error) {
