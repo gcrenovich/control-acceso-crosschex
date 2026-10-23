@@ -4,10 +4,7 @@ const conn = new Client();
 
 conn.on('ready', () => {
   const cmd = `
-    echo "=== permisos_sectores.json ==="
-    cat /home/admin-irg/sistemas/irg-portal/data/permisos_sectores.json 2>/dev/null || true
-    echo "=== usuarios roles en DB ==="
-    cat /home/admin-irg/sistemas/irg-portal/data/sectores.json 2>/dev/null || true
+    cat /home/admin-irg/sistemas/irg-portal/admin/permisos_sectores.php | grep -E "(sistemas_disponibles|sistemas)" -A 10 | head -n 30
   `;
   conn.exec(cmd, (err, stream) => {
     if (err) throw err;
