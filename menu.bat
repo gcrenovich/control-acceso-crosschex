@@ -10,10 +10,11 @@ echo  [1] Iniciar Servicios (Backend + Frontend)
 echo  [2] Detener / Suspender Servicios
 echo  [3] Reiniciar Servicios
 echo  [4] Ver Estado de los Servicios
-echo  [5] Salir
+echo  [5] Sincronizar datos con Servidor ahora (Manual)
+echo  [6] Salir
 echo.
 echo ===================================================
-set /p opcion="Seleccione una opcion [1-5]: "
+set /p opcion="Seleccione una opcion [1-6]: "
 
 if "%opcion%"=="1" (
     call "%~dp0iniciar.bat"
@@ -53,6 +54,11 @@ if "%opcion%"=="4" (
     pause
     goto menu
 )
-if "%opcion%"=="5" exit
+if "%opcion%"=="5" (
+    cls
+    call "%~dp0sincronizar_manual.bat"
+    goto menu
+)
+if "%opcion%"=="6" exit
 
 goto menu

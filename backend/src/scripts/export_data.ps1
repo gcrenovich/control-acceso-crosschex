@@ -1,6 +1,6 @@
 $replicaDir = "C:\CrossChex_Replicas"
 $replicaPath = "$replicaDir\CrossChex_Local.mdb"
-$originalPath = $env:ORIGINAL_MDB_PATH
+$originalPath = if (![string]::IsNullOrWhiteSpace($env:ORIGINAL_MDB_PATH)) { $env:ORIGINAL_MDB_PATH } else { "\\10.0.0.89\CrossChex Standard\DB\CrossChex.mdb" }
 $tempPath = "$env:TEMP\temp_crosschex_exp_$([guid]::NewGuid().ToString().Substring(0,8)).mdb"
 
 if (!(Test-Path $replicaDir)) { New-Item -ItemType Directory -Path $replicaDir -Force | Out-Null }
@@ -233,6 +233,10 @@ try {
         [System.IO.File]::WriteAllText("$outputDir\devices.json.tmp", $devJson, [System.Text.Encoding]::UTF8)
         if (Test-Path "$outputDir\devices.json") { Remove-Item "$outputDir\devices.json" -Force }
         Move-Item "$outputDir\devices.json.tmp" "$outputDir\devices.json" -Force
+    } catch {
+        Write-Host "Nota: No se pudo exportar FingerClient: $_"
+    }
+
     Write-Host "Exportando Feriados de CrossChex (Holiday)..."
     try {
         $cmdHol = $conn.CreateCommand()
