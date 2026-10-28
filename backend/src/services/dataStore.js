@@ -573,10 +573,27 @@ export const runSyncScript = () => {
     if (isSyncing) return resolve({ message: 'Sincronización ya en curso' });
     isSyncing = true;
 
-    // Compatibilidad multiplataforma: En Ubuntu/Linux la extracción de Access MDB no cuenta con ACE.OLEDB de Windows.
+    // Compatibilidad multiplataforma: En Ubuntu/Linux ejecutar sync_crosschex_linux.py
     if (process.platform !== 'win32') {
+      const pythonScript = path.join(__dirname, '../scripts/sync_crosschex_linux.py');
+      if (fs.existsSync(pythonScript)) {
+        console.log('🚀 Ejecutando sincronizador directo Linux (10.0.0.89 -> 10.0.0.10)...');
+        exec(`python3 "${pythonScript}"`, async (error, stdout, stderr) => {
+          isSyncing = false;
+          if (error) {
+            console.error('❌ Error en script de sincronización Linux:', stderr || error.message);
+            await loadData().catch(() => {});
+            return reject(error);
+          }
+          console.log('✅ Sincronización Linux completada:', stdout.trim().split('\n').slice(-2).join(' '));
+          await loadData();
+          resolve({ success: true, timestamp: lastSyncTime, platform: 'linux' });
+        });
+        return;
+      }
+
       isSyncing = false;
-      console.log('ℹ️ Entorno Linux/Ubuntu detectado: la base Access MDB se sincroniza mediante ingesta de archivos. Recargando dataset en memoria...');
+      console.log('ℹ️ Entorno Linux/Ubuntu detectado: recargando dataset en memoria...');
       return loadData()
         .then(() => resolve({ 
           success: true, 

@@ -253,6 +253,20 @@ router.post('/sync', syncLimiter, requireApiKey, async (req, res) => {
   }
 });
 
+// POST /api/sync/reload - Recarga de memoria en caliente (utilizado por el cron / script tras exportar)
+router.post('/sync/reload', async (req, res) => {
+  try {
+    await loadData();
+    res.json({ 
+      success: true, 
+      message: 'Dataset recargado en memoria exitosamente.', 
+      timestamp: new Date().toISOString() 
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // POST /api/sync/push - Endpoint de ingesta segura para transferir datos a Ubuntu
 router.post('/sync/push', syncLimiter, requireApiKey, async (req, res) => {
   try {
